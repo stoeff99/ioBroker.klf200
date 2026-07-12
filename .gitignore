@@ -2,14 +2,12 @@
 .idea
 node_modules
 nbproject
-build/*
+build/maps
 src-admin/build/*
 src/.__mf__temp
 src-admin/.__mf__temp
 src/.__mf__temp/
 src-admin/.__mf__temp/
-# Include to help with ioBroker adapter checker
-!build/main.js
 
 # Sourcemaps
 maps/
@@ -33,5 +31,3 @@ admin/i18n/*/flat.txt
 
 #ignore .commitinfo created by ioBroker release script
 .commitinfo
-!build/klf200Adapter.js
-!tsconfig.build.json
