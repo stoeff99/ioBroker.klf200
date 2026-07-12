@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+	<head>
+          <script type="module" src="./assets/hostInit-D1hmTtPS.js"></script>
+        
+		<meta charset="UTF-8" />
+		<link
+			rel="icon"
+			type="image/svg+xml"
+			href="/src/favicon.svg"
+		/>
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1.0"
+		/>
+		<title>Admin App</title>
+		<script>
+			var script = document.createElement("script");
+			window.registerSocketOnLoad = function (cb) {
+				window.socketLoadedHandler = cb;
+			};
+			script.onload = function () {
+				typeof window.socketLoadedHandler === "function" && window.socketLoadedHandler();
+			};
+			setTimeout(() => {
+				script.src = window.location.port.startsWith("300")
+					? window.location.protocol + "//" + window.location.hostname + ":8081/lib/js/socket.io.js"
+					: "../../lib/js/socket.io.js";
+			}, 1000);
+
+			document.head.appendChild(script);
+		</script>
+		<script type="module" crossorigin src="./assets/index-CsDOCa13.js"></script>
+		<link rel="modulepreload" crossorigin href="./assets/preload-helper-Dp1pzeXC.js">
+		<link rel="modulepreload" crossorigin href="./assets/virtualExposes-0IrJHn7r.js">
+		<link rel="modulepreload" crossorigin href="./assets/virtual_mf-REMOTE_ENTRY_ID___mfe_internal__ConfigCustomKlf200Set__customComponents_js-DT1kHsxi.js">
+		<link rel="modulepreload" crossorigin href="./assets/__mfe_internal__ConfigCustomKlf200Set__loadShare__react__loadShare__.js-COUGyKA-.js">
+		<link rel="modulepreload" crossorigin href="./assets/__mfe_internal__ConfigCustomKlf200Set__loadShare__react__loadShare__.js_commonjs-proxy-DEaX3GUr.js">
+		<link rel="modulepreload" crossorigin href="./assets/jsx-runtime-BJTKe6km.js">
+		<link rel="modulepreload" crossorigin href="./assets/__mfe_internal__ConfigCustomKlf200Set__loadShare__react_mf_2_dom__loadShare__.js-DtVbe5-Z.js">
+		<link rel="modulepreload" crossorigin href="./assets/__mfe_internal__ConfigCustomKlf200Set__loadShare__react_mf_2_dom__loadShare__.js_commonjs-proxy-f_8Shua4.js">
+		<link rel="modulepreload" crossorigin href="./assets/__mfe_internal__ConfigCustomKlf200Set__loadShare___mf_0_iobroker_mf_1_adapter_mf_2_react_mf_2_v5__loadShare__.js-CmveFpaW.js">
+		<link rel="modulepreload" crossorigin href="./assets/__mfe_internal__ConfigCustomKlf200Set__loadShare___mf_0_mui_mf_1_material__loadShare__.js-CCHpxIWv.js">
+		<link rel="modulepreload" crossorigin href="./assets/ConnectionTestComponent-ITLX_xD5.js">
+		<link rel="modulepreload" crossorigin href="./assets/__mfe_internal__ConfigCustomKlf200Set__loadShare__prop_mf_2_types__loadShare__.js-Cg5YlY8W.js">
+		<link rel="modulepreload" crossorigin href="./assets/createTheme-JkxfhsJ5.js">
+		<link rel="modulepreload" crossorigin href="./assets/index-CwBn3tuj.js">
+		<link rel="modulepreload" crossorigin href="./assets/useThemeWithoutDefault-C-ut0aM-.js">
+		<link rel="modulepreload" crossorigin href="./assets/DefaultPropsProvider-CBowfzCa.js">
+		<link rel="modulepreload" crossorigin href="./assets/ThemeProvider-Cr5oxFXl.js">
+	</head>
+	<body>
+		<div id="root"></div>
+	</body>
+</html>
