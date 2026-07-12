@@ -7,29 +7,11 @@ const patchAppliedSymbol = Symbol.for("iobroker.klf200.tlsFingerprintPatchApplie
 
 type FingerprintConnection = {
 	host: string;
-	readonly CA: Buffer;
 	readonly fingerprint: string;
 	readonly connectionOptions?: ConnectionOptions;
 	sckt?: TLSSocket;
 	socketClosedEventHandler: () => void;
 };
-
-function createPinnedTlsConnectionOptions(
-	connection: Pick<FingerprintConnection, "CA" | "fingerprint">,
-): ConnectionOptions {
-	return {
-		rejectUnauthorized: false,
-		ca: [connection.CA],
-		checkServerIdentity: (host, cert) => {
-			if (cert.fingerprint === connection.fingerprint) {
-				return undefined;
-			}
-			return new Error(
-				`KLF-200 certificate fingerprint mismatch. Expected ${connection.fingerprint}, got ${cert.fingerprint ?? "<none>"}.`,
-			);
-		},
-	};
-}
 
 function runServerIdentityCheck(
 	checkServerIdentity: NonNullable<ConnectionOptions["checkServerIdentity"]>,
@@ -46,25 +28,45 @@ function runServerIdentityCheck(
 /**
  * Creates TLS options that disable strict certificate chain validation and enforce fingerprint pinning.
  *
- * @param hostname KLF200 hostname.
+ * No built-in CA certificate is included in the default options so that an expired factory CA does
+ * not prevent the TLS handshake from completing. Chain validation is intentionally bypassed via
+ * `rejectUnauthorized: false`; peer authenticity is instead verified by comparing the server
+ * certificate's fingerprint against the pinned value after the handshake.
+ *
+ * @param _hostname KLF200 hostname (kept for API compatibility).
  * @param sslPublicKey Optional custom CA/certificate as configured in the adapter.
  * @param sslFingerprint Optional custom fingerprint as configured in the adapter.
  */
 export function createKlf200PinnedTlsOptions(
-	hostname: string,
+	_hostname: string,
 	sslPublicKey?: string,
 	sslFingerprint?: string,
 ): ConnectionOptions {
-	const connection = new Connection(
-		hostname,
-		sslPublicKey !== undefined ? Buffer.from(sslPublicKey) : undefined,
-		sslFingerprint ?? KLF200_FACTORY_FINGERPRINT,
-	);
-	return createPinnedTlsConnectionOptions(connection);
+	const fingerprint = sslFingerprint ?? KLF200_FACTORY_FINGERPRINT;
+	const result: ConnectionOptions = {
+		rejectUnauthorized: false,
+		checkServerIdentity: (_host, cert) => {
+			if (cert.fingerprint === fingerprint) {
+				return undefined;
+			}
+			return new Error(
+				`KLF-200 certificate fingerprint mismatch. Expected ${fingerprint}, got ${cert.fingerprint ?? "<none>"}.`,
+			);
+		},
+	};
+	if (sslPublicKey !== undefined) {
+		result.ca = [Buffer.from(sslPublicKey)];
+	}
+	return result;
 }
 
 /**
- * Patches klf-200-api connection startup so fingerprint pinning works even when certificate chain validation fails.
+ * Patches klf-200-api connection startup so fingerprint pinning works even when certificate chain
+ * validation fails (e.g. when the factory certificate or its issuing CA has expired). The patch
+ * replaces `Connection.prototype.initSocketAsync` with an implementation that:
+ *   1. Connects with `rejectUnauthorized: false` so an expired chain does not abort the handshake.
+ *   2. After the handshake, resolves immediately when the socket is already `authorized`.
+ *   3. Otherwise performs a manual fingerprint check and resolves only on a match.
  */
 export function applyKlf200TlsFingerprintPatch(): void {
 	const prototype = Connection.prototype as unknown as Record<symbol, unknown>;
@@ -78,7 +80,27 @@ export function applyKlf200TlsFingerprintPatch(): void {
 			return Promise.resolve();
 		}
 
-		const effectiveConnectionOptions = this.connectionOptions ?? createPinnedTlsConnectionOptions(this);
+		const effectiveConnectionOptions: ConnectionOptions = this.connectionOptions ?? {
+			rejectUnauthorized: false,
+			checkServerIdentity: (_host: string, cert: PeerCertificate) => {
+				if (cert.fingerprint === this.fingerprint) {
+					return undefined;
+				}
+				return new Error(
+					`KLF-200 certificate fingerprint mismatch. Expected ${this.fingerprint}, got ${cert.fingerprint ?? "<none>"}.`,
+				);
+			},
+		};
+
+		// Separate the caller-supplied identity check from the socket-level connection options.
+		// We suppress it at the TLS handshake layer so that the secureConnect callback is always
+		// fired – even when the cert chain is invalid (expired factory CA).  The actual
+		// fingerprint verification is then performed manually inside the callback.
+		const { checkServerIdentity: userIdentityCheck } = effectiveConnectionOptions;
+		const socketConnectionOptions: ConnectionOptions = {
+			...effectiveConnectionOptions,
+			checkServerIdentity: () => undefined,
+		};
 
 		return await new Promise<void>((resolve, reject) => {
 			const loginErrorHandler = (error: Error): void => {
@@ -87,40 +109,39 @@ export function applyKlf200TlsFingerprintPatch(): void {
 			};
 
 			try {
-				this.sckt = connect(KLF200_TLS_PORT, this.host, effectiveConnectionOptions, () => {
-					if (this.sckt?.authorized) {
-						this.sckt?.off("error", loginErrorHandler);
-						resolve();
-						return;
-					}
-
+				this.sckt = connect(KLF200_TLS_PORT, this.host, socketConnectionOptions, () => {
 					const cert = this.sckt?.getPeerCertificate();
-					let serverIdentityError: Error | undefined;
-					if (
-						cert !== undefined &&
-						Object.keys(cert).length > 0 &&
-						effectiveConnectionOptions.checkServerIdentity !== undefined
-					) {
-						serverIdentityError = runServerIdentityCheck(
-							effectiveConnectionOptions.checkServerIdentity,
-							this.host,
-							cert,
-						);
-					}
 
-					if (serverIdentityError === undefined && cert !== undefined && Object.keys(cert).length > 0) {
-						this.sckt?.off("error", loginErrorHandler);
-						resolve();
+					if (cert === undefined || Object.keys(cert).length === 0) {
+						const socket = this.sckt;
+						this.sckt = undefined;
+						socket?.destroy();
+						reject(new Error("TLS peer certificate missing."));
 						return;
 					}
 
-					const error =
-						serverIdentityError ??
-						this.sckt?.authorizationError ??
-						new Error("TLS peer certificate missing.");
+					if (userIdentityCheck !== undefined) {
+						// Custom identity check (e.g. fingerprint pinning) – accept only on match.
+						const identityError = runServerIdentityCheck(userIdentityCheck, this.host, cert);
+						if (identityError !== undefined) {
+							const socket = this.sckt;
+							this.sckt = undefined;
+							socket?.destroy();
+							reject(identityError);
+							return;
+						}
+					} else if (!this.sckt?.authorized) {
+						// No custom check and the socket is not authorized – report the TLS error.
+						const error = this.sckt?.authorizationError ?? new Error("TLS authorization failed.");
+						const socket = this.sckt;
+						this.sckt = undefined;
+						socket?.destroy();
+						reject(error);
+						return;
+					}
 
-					this.sckt = undefined;
-					reject(error);
+					this.sckt?.off("error", loginErrorHandler);
+					resolve();
 				});
 
 				this.sckt?.on("error", loginErrorHandler);
