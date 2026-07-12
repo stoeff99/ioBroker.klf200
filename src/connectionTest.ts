@@ -7,7 +7,7 @@ import { applyKlf200TlsFingerprintPatch } from "./tlsFingerprint.js";
 import type { Translate } from "./translate.js";
 
 const debug = debugModule("connectionTest");
-applyKlf200TlsFingerprintPatch();
+const KLF200_FINGERPRINT = "02:8C:23:A0:89:2B:62:98:C4:99:00:5B:D2:E7:2E:0A:70:3D:71:6A";
 
 /**
  * Represents the result of a connection test step.
@@ -91,19 +91,8 @@ export interface IConnectionTest {
  * Implements connection test operations for KLF-200 devices.
  */
 export class ConnectionTest implements IConnectionTest {
-	/**
-	 * Creates an instance of ConnectionTest.
-	 *
-	 * @param translation The translation service to use for messages.
-	 */
 	constructor(private readonly translation: Translate) {}
 
-	/**
-	 * Resolves the given hostname to an IP address.
-	 *
-	 * @param hostname The hostname to resolve.
-	 * @returns A promise that resolves to the IP address as a string.
-	 */
 	async resolveName(hostname: string): Promise<string> {
 		debug(`Resolving name for hostname: ${hostname}`);
 		const result = await lookup(hostname, { all: false, verbatim: false });
@@ -111,12 +100,6 @@ export class ConnectionTest implements IConnectionTest {
 		return result.address;
 	}
 
-	/**
-	 * Pings the given IP address and returns the latency in milliseconds.
-	 *
-	 * @param ipadress The IP address to ping.
-	 * @returns A promise that resolves to the latency in milliseconds.
-	 */
 	async ping(ipadress: string): Promise<number> {
 		debug(`Pinging IP address: ${ipadress}`);
 		const pingConfig: ping.PingConfig = {
@@ -145,22 +128,41 @@ export class ConnectionTest implements IConnectionTest {
 		}
 	}
 
-	/**
-	 * Establishes a secure connection to the given hostname and port.
-	 *
-	 * @param hostname The hostname to connect to.
-	 * @param port The port to connect to.
-	 * @param connectionOptions Optional connection options.
-	 * @returns A promise that resolves when the connection is established.
-	 */
 	async connectTlsSocket(hostname: string, port: number, connectionOptions?: ConnectionOptions): Promise<void> {
 		debug(`Connecting to TLS socket at ${hostname}:${port}`);
 		return new Promise<void>((resolve, reject) => {
 			let sckt: TLSSocket | undefined;
 			try {
-				sckt = connect(port, hostname, connectionOptions, () => {
-					if (sckt?.authorized) {
-						debug("TLS connection authorized");
+				sckt = connect(
+					port,
+					hostname,
+					{ ...connectionOptions, rejectUnauthorized: false },
+					() => {
+						const peerCert = sckt?.getPeerCertificate();
+						const expectedFingerprint =
+							(connectionOptions as any)?.fingerprint?.toString?.() ??
+							(connectionOptions as any)?.sslFingerprint ??
+							KLF200_FINGERPRINT;
+
+						if (!peerCert?.fingerprint) {
+							reject(new Error(`No peer certificate received.`));
+							sckt?.destroy();
+							sckt = undefined;
+							return;
+						}
+
+						if (peerCert.fingerprint !== expectedFingerprint) {
+							reject(
+								new Error(
+									`KLF-200 certificate fingerprint mismatch. Expected ${expectedFingerprint}, got ${peerCert.fingerprint}.`,
+								),
+							);
+							sckt?.destroy();
+							sckt = undefined;
+							return;
+						}
+
+						debug("TLS connection fingerprint verified");
 						sckt?.destroy();
 						sckt = undefined;
 						resolve();
@@ -204,14 +206,6 @@ export class ConnectionTest implements IConnectionTest {
 		});
 	}
 
-	/**
-	 * Logs in to the given hostname with the given password.
-	 *
-	 * @param hostname The hostname to log in to.
-	 * @param password The password to use for logging in.
-	 * @param connectionOptions Optional connection options.
-	 * @returns A promise that resolves when the login is successful.
-	 */
 	async login(hostname: string, password: string, connectionOptions?: ConnectionOptions): Promise<void> {
 		const connection =
 			connectionOptions !== undefined ? new Connection(hostname, connectionOptions) : new Connection(hostname);
@@ -231,15 +225,6 @@ export class ConnectionTest implements IConnectionTest {
 		}
 	}
 
-	/**
-	 * Runs connection tests for the given hostname and password.
-	 *
-	 * @param hostname The hostname to test.
-	 * @param password The password to use for logging in.
-	 * @param connectionOptions Optional connection options.
-	 * @param progressCallback Optional callback to report progress.
-	 * @returns A promise that resolves to an array of ConnectionTestResult objects.
-	 */
 	async runTests(
 		hostname: string,
 		password: string,
@@ -247,26 +232,10 @@ export class ConnectionTest implements IConnectionTest {
 		progressCallback?: (progress: ConnectionTestResult[]) => Promise<void>,
 	): Promise<ConnectionTestResult[]> {
 		const result: ConnectionTestResult[] = [
-			{
-				stepOrder: 1,
-				stepName: await this.translation.translate("connection-test-step-name-name-lookup"),
-				run: false,
-			},
-			{
-				stepOrder: 2,
-				stepName: await this.translation.translate("connection-test-step-name-ping"),
-				run: false,
-			},
-			{
-				stepOrder: 3,
-				stepName: await this.translation.translate("connection-test-step-name-connection"),
-				run: false,
-			},
-			{
-				stepOrder: 4,
-				stepName: await this.translation.translate("connection-test-step-name-login"),
-				run: false,
-			},
+			{ stepOrder: 1, stepName: await this.translation.translate("connection-test-step-name-name-lookup"), run: false },
+			{ stepOrder: 2, stepName: await this.translation.translate("connection-test-step-name-ping"), run: false },
+			{ stepOrder: 3, stepName: await this.translation.translate("connection-test-step-name-connection"), run: false },
+			{ stepOrder: 4, stepName: await this.translation.translate("connection-test-step-name-login"), run: false },
 		];
 
 		const callProgressCallback = async function (): Promise<void> {
@@ -275,103 +244,37 @@ export class ConnectionTest implements IConnectionTest {
 			}
 		};
 
-		// Send the progress data back for display
 		await callProgressCallback();
 
-		// Step 1: Name lookup
 		try {
 			const ipaddress = await this.resolveName(hostname);
-			result[0] = {
-				...result[0],
-				run: true,
-				success: true,
-				message: await this.translation.translate("connection-test-message-name-lookup-success", {
-					hostname: hostname,
-					ipaddress: ipaddress,
-				}),
-				result: ipaddress,
-			};
+			result[0] = { ...result[0], run: true, success: true, message: await this.translation.translate("connection-test-message-name-lookup-success", { hostname, ipaddress }), result: ipaddress };
 			await callProgressCallback();
 
-			// Step 2: Ping
 			try {
 				const ms = await this.ping(ipaddress);
-				result[1] = {
-					...result[1],
-					run: true,
-					success: true,
-					// message: `Ping was successful after ${ms} milliseconds.`,
-					message: await this.translation.translate("connection-test-message-ping-success", {
-						ms: ms.toString(),
-					}),
-					result: ms,
-				};
+				result[1] = { ...result[1], run: true, success: true, message: await this.translation.translate("connection-test-message-ping-success", { ms: ms.toString() }), result: ms };
 				await callProgressCallback();
 
-				// Step 3: TLS connection
 				try {
 					await this.connectTlsSocket(hostname, 51200, connectionOptions);
-					result[2] = {
-						...result[2],
-						run: true,
-						success: true,
-						message: await this.translation.translate("connection-test-message-connection-success"),
-					};
+					result[2] = { ...result[2], run: true, success: true, message: await this.translation.translate("connection-test-message-connection-success") };
 					await callProgressCallback();
 
-					// Step 4: Login
 					try {
 						await this.login(hostname, password, connectionOptions);
-						result[3] = {
-							...result[3],
-							run: true,
-							success: true,
-							message: await this.translation.translate("connection-test-message-login-success"),
-						};
+						result[3] = { ...result[3], run: true, success: true, message: await this.translation.translate("connection-test-message-login-success") };
 					} catch (error) {
-						result[3] = {
-							...result[3],
-							run: true,
-							success: false,
-							message: await this.translation.translate("connection-test-message-login-failure", {
-								message: (error as Error).message,
-							}),
-							result: error as Error,
-						};
+						result[3] = { ...result[3], run: true, success: false, message: await this.translation.translate("connection-test-message-login-failure", { message: (error as Error).message }), result: error as Error };
 					}
 				} catch (error) {
-					result[2] = {
-						...result[2],
-						run: true,
-						success: false,
-						message: await this.translation.translate("connection-test-message-connection-failure", {
-							message: (error as Error).message,
-						}),
-						result: error as Error,
-					};
+					result[2] = { ...result[2], run: true, success: false, message: await this.translation.translate("connection-test-message-connection-failure", { message: (error as Error).message }), result: error as Error };
 				}
 			} catch (error) {
-				result[1] = {
-					...result[1],
-					run: true,
-					success: false,
-					message: await this.translation.translate("connection-test-message-ping-failure", {
-						ipaddress: ipaddress,
-						message: (error as Error).message,
-					}),
-					result: error as Error,
-				};
+				result[1] = { ...result[1], run: true, success: false, message: await this.translation.translate("connection-test-message-ping-failure", { ipaddress, message: (error as Error).message }), result: error as Error };
 			}
 		} catch (error) {
-			result[0] = {
-				...result[0],
-				run: true,
-				success: false,
-				message: await this.translation.translate("connection-test-message-name-lookup-failure", {
-					hostname: hostname,
-				}),
-				result: error as Error,
-			};
+			result[0] = { ...result[0], run: true, success: false, message: await this.translation.translate("connection-test-message-name-lookup-failure", { hostname }), result: error as Error };
 		}
 
 		return result;
