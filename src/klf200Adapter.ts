@@ -2066,7 +2066,7 @@ export class Klf200 extends utils.Adapter implements HasConnectionInterface, Has
 			data.advancedSSLConfiguration?.sslFingerprint,
 		);
 		return {
-			rejectUnauthorized: true,
+			rejectUnauthorized: false,
 			ca: klf200Connection.CA,
 			checkServerIdentity: (host, cert) => {
 				if (cert.fingerprint === klf200Connection.fingerprint) {
