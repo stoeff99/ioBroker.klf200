@@ -194,6 +194,8 @@ declare global {
 	}
 }
 
+const KLF200_FINGERPRINT = "02:8C:23:A0:89:2B:62:98:C4:99:00:5B:D2:E7:2E:0A:70:3D:71:6A";
+
 type ConnectionWatchDogHandler = (hadError: boolean) => void;
 
 const refreshTimeoutMS = 120_000; // Wait max. 2 minutes for the notification.
@@ -2058,21 +2060,26 @@ export class Klf200 extends utils.Adapter implements HasConnectionInterface, Has
 	}
 
 	private createConnectionOptions(data: ConnectionTestMessage): ConnectionOptions {
+		const configuredFingerprint = data.advancedSSLConfiguration?.sslFingerprint?.trim();
+		const klf200Fingerprint = configuredFingerprint && configuredFingerprint.length > 0 ? configuredFingerprint : KLF200_FINGERPRINT;
 		const klf200Connection = new Connection(
 			data.hostname,
 			data.advancedSSLConfiguration?.sslPublicKey !== undefined
 				? Buffer.from(data.advancedSSLConfiguration?.sslPublicKey)
 				: undefined,
-			data.advancedSSLConfiguration?.sslFingerprint,
+			klf200Fingerprint,
 		);
+
 		return {
 			rejectUnauthorized: false,
 			ca: klf200Connection.CA,
-			checkServerIdentity: (host, cert) => {
+			checkServerIdentity: (_host, cert) => {
 				if (cert.fingerprint === klf200Connection.fingerprint) {
 					return undefined;
 				}
-				return checkServerIdentityOriginal(host, cert);
+				return new Error(
+					`KLF-200 certificate fingerprint mismatch. Expected ${klf200Connection.fingerprint}, got ${cert.fingerprint}.`,
+				);
 			},
 		};
 	}
