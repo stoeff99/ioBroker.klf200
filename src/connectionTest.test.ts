@@ -1,247 +1,445 @@
+import { expect } from "chai";
 import debugModule from "debug";
-import { lookup } from "dns/promises";
-import { Connection } from "klf-200-api";
-import { connect, type ConnectionOptions, type TLSSocket } from "node:tls";
-import ping from "ping";
+import { env } from "node:process";
+import type { ConnectionOptions } from "node:tls";
+import sinon from "sinon";
+import { MockServerController } from "../test/mocks/mockServerController.js";
+import { ConnectionTest } from "./connectionTest.js";
 import type { Translate } from "./translate.js";
 
-const debug = debugModule("connectionTest");
-const KLF200_FINGERPRINT = "02:8C:23:A0:89:2B:62:98:C4:99:00:5B:D2:E7:2E:0A:70:3D:71:6A";
+const debug = debugModule("testing:connectionTest");
 
-/**
- * Represents the result of a connection test step.
- */
-export class ConnectionTestResult {
-	/**
-	 * Constructor for a ConnectionTestResult.
-	 *
-	 * @param stepOrder The step number of the test in the order of execution.
-	 * @param stepName A short description of the test step.
-	 * @param run A boolean indicating whether the test step was run.
-	 * @param success A boolean indicating whether the test step was successful.
-	 * @param message A string message giving more information about the test result.
-	 * @param result An optional result object that can be an Error, a string or a number.
-	 */
-	public constructor(
-		public readonly stepOrder: number,
-		public readonly stepName: string,
-		public readonly run: boolean,
-		public readonly success?: boolean,
-		public readonly message?: string,
-		public readonly result?: Error | string | number,
-	) {}
-}
+const RunsInCITests = env.CI === "true";
+const MISMATCHED_TEST_FINGERPRINT = "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44";
 
-/**
- * Interface for connection test operations.
- */
-export interface IConnectionTest {
-	/**
-	 * Resolves the given hostname to an IP address.
-	 *
-	 * @param hostname The hostname to resolve.
-	 * @returns A promise that resolves to the IP address as a string.
-	 */
-	resolveName(hostname: string): Promise<string>;
-
-	/**
-	 * Pings the given IP address and returns the latency in milliseconds.
-	 *
-	 * @param ipadress The IP address to ping.
-	 * @returns A promise that resolves to the latency in milliseconds.
-	 */
-	ping(ipadress: string): Promise<number>;
-	/**
-	 * Establishes a secure connection to the given hostname and port.
-	 *
-	 * @param hostname The hostname to connect to.
-	 * @param port The port to connect to.
-	 * @param connectionOptions Optional connection options.
-	 * @returns A promise that resolves when the connection is established.
-	 */
-	connectTlsSocket(hostname: string, port: number, connectionOptions?: ConnectionOptions): Promise<void>;
-	/**
-	 * Logs in to the given hostname with the given password.
-	 *
-	 * @param hostname The hostname to log in to.
-	 * @param password The password to use for logging in.
-	 * @param connectionOptions Optional connection options.
-	 * @returns A promise that resolves when the login is successful.
-	 */
-	login(hostname: string, password: string, connectionOptions?: ConnectionOptions): Promise<void>;
-	/**
-	 * Runs connection tests for the given hostname and password.
-	 *
-	 * @param hostname The hostname to test.
-	 * @param password The password to use for logging in.
-	 * @param connectionOptions Optional connection options.
-	 * @param progressCallback Optional callback to receive progress updates.
-	 * @returns A promise that resolves to an array of ConnectionTestResult objects.
-	 */
-	runTests(
-		hostname: string,
-		password: string,
-		connectionOptions?: ConnectionOptions,
-		progressCallback?: (progress: ConnectionTestResult[]) => Promise<void>,
-	): Promise<ConnectionTestResult[]>;
-}
-
-/**
- * Implements connection test operations for KLF-200 devices.
- */
-export class ConnectionTest implements IConnectionTest {
-	constructor(private readonly translation: Translate) {}
-
-	async resolveName(hostname: string): Promise<string> {
-		debug(`Resolving name for hostname: ${hostname}`);
-		const result = await lookup(hostname, { all: false, verbatim: false });
-		debug(`Resolved address: ${result.address}`);
-		return result.address;
+class TranslationMock implements Translate {
+	translateTo(language: ioBroker.Languages, textKey: string, _context?: Record<string, string>): Promise<string> {
+		return Promise.resolve(textKey);
 	}
-
-	async ping(ipadress: string): Promise<number> {
-		debug(`Pinging IP address: ${ipadress}`);
-		const pingConfig: ping.PingConfig = {
-			packetSize: 64,
-		};
-		try {
-			const result = await ping.promise.probe(ipadress, pingConfig);
-
-			if (!result.alive) {
-				debug(`Ping failed`);
-				throw new Error(`Ping failed. ${result.output}`);
-			}
-
-			const latency =
-				typeof result.time === "string"
-					? result.time === "unknown"
-						? 0
-						: parseFloat(result.time)
-					: result.time;
-
-			debug(`Ping successful, latency: ${latency}ms`);
-			return latency;
-		} catch (error) {
-			debug(`Ping exception: ${(error as Error).message}`);
-			throw error;
-		}
-	}
-
-	async connectTlsSocket(hostname: string, port: number, connectionOptions?: ConnectionOptions): Promise<void> {
-		debug(`Connecting to TLS socket at ${hostname}:${port}`);
-		return new Promise<void>((resolve, reject) => {
-			let sckt: TLSSocket | undefined;
-			try {
-				sckt = connect(
-					port,
-					hostname,
-					{ ...connectionOptions, rejectUnauthorized: false },
-					() => {
-						const peerCert = sckt?.getPeerCertificate();
-						const expectedFingerprint =
-							(connectionOptions as any)?.fingerprint?.toString?.() ??
-							(connectionOptions as any)?.sslFingerprint ??
-							KLF200_FINGERPRINT;
-
-						if (!peerCert?.fingerprint) {
-							reject(new Error(`No peer certificate received.`));
-							sckt?.destroy();
-							sckt = undefined;
-							return;
-						}
-
-						if (peerCert.fingerprint !== expectedFingerprint) {
-							reject(
-								new Error(
-									`KLF-200 certificate fingerprint mismatch. Expected ${expectedFingerprint}, got ${peerCert.fingerprint}.`,
-								),
-							);
-							sckt?.destroy();
-							sckt = undefined;
-							return;
-						}
-
-						debug("TLS connection fingerprint verified");
-						sckt?.destroy();
-						sckt = undefined;
-						resolve();
-					},
-				);
-				sckt.on("error", (error: Error) => {
-					debug(`TLS connection error: ${error.message}`);
-					reject(error);
-				});
-			} catch (error) {
-				debug(`TLS connection exception: ${(error as Error).message}`);
-				if (sckt) {
-					sckt.destroy();
-				}
-				reject(error as Error);
-			}
+	public async getTranslatedObject(
+		textKey: string,
+		_context?: Record<string, unknown>,
+	): Promise<ioBroker.Translated> {
+		return Promise.resolve({
+			de: textKey,
+			en: textKey,
+			es: textKey,
+			fr: textKey,
+			it: textKey,
+			nl: textKey,
+			pl: textKey,
+			pt: textKey,
+			ru: textKey,
+			uk: textKey,
+			"zh-cn": textKey,
 		});
 	}
 
-	async login(hostname: string, password: string, connectionOptions?: ConnectionOptions): Promise<void> {
-		const connection = new Connection(hostname, connectionOptions!);
-		try {
-			await connection.loginAsync(password);
-		} finally {
-			await connection.logoutAsync();
-		}
+	public async translate(textKey: string, _context?: Record<string, unknown>): Promise<string> {
+		return Promise.resolve(textKey);
 	}
 
-	async runTests(
-		hostname: string,
-		password: string,
-		connectionOptions?: ConnectionOptions,
-		progressCallback?: (progress: ConnectionTestResult[]) => Promise<void>,
-	): Promise<ConnectionTestResult[]> {
-		const result: ConnectionTestResult[] = [
-			{ stepOrder: 1, stepName: await this.translation.translate("connection-test-step-name-name-lookup"), run: false },
-			{ stepOrder: 2, stepName: await this.translation.translate("connection-test-step-name-ping"), run: false },
-			{ stepOrder: 3, stepName: await this.translation.translate("connection-test-step-name-connection"), run: false },
-			{ stepOrder: 4, stepName: await this.translation.translate("connection-test-step-name-login"), run: false },
-		];
-
-		const callProgressCallback = async function (): Promise<void> {
-			if (progressCallback) {
-				await progressCallback(result);
-			}
-		};
-
-		await callProgressCallback();
-
-		try {
-			const ipaddress = await this.resolveName(hostname);
-			result[0] = { ...result[0], run: true, success: true, message: await this.translation.translate("connection-test-message-name-lookup-success", { hostname, ipaddress }), result: ipaddress };
-			await callProgressCallback();
-
-			try {
-				const ms = await this.ping(ipaddress);
-				result[1] = { ...result[1], run: true, success: true, message: await this.translation.translate("connection-test-message-ping-success", { ms: ms.toString() }), result: ms };
-				await callProgressCallback();
-
-				try {
-					await this.connectTlsSocket(hostname, 51200, connectionOptions);
-					result[2] = { ...result[2], run: true, success: true, message: await this.translation.translate("connection-test-message-connection-success") };
-					await callProgressCallback();
-
-					try {
-						await this.login(hostname, password, connectionOptions);
-						result[3] = { ...result[3], run: true, success: true, message: await this.translation.translate("connection-test-message-login-success") };
-					} catch (error) {
-						result[3] = { ...result[3], run: true, success: false, message: await this.translation.translate("connection-test-message-login-failure", { message: (error as Error).message }), result: error as Error };
-					}
-				} catch (error) {
-					result[2] = { ...result[2], run: true, success: false, message: await this.translation.translate("connection-test-message-connection-failure", { message: (error as Error).message }), result: error as Error };
-				}
-			} catch (error) {
-				result[1] = { ...result[1], run: true, success: false, message: await this.translation.translate("connection-test-message-ping-failure", { ipaddress, message: (error as Error).message }), result: error as Error };
-			}
-		} catch (error) {
-			result[0] = { ...result[0], run: true, success: false, message: await this.translation.translate("connection-test-message-name-lookup-failure", { hostname }), result: error as Error };
-		}
-
-		return result;
+	public async translateObject(textKey: string, _context?: Record<string, unknown>): Promise<string> {
+		return Promise.resolve(textKey);
 	}
 }
+
+function getFingerprintPinnedTlsOptions(fingerprint: string): ConnectionOptions {
+	const connectionOptions = MockServerController.getMockServerConnectionOptions();
+	return {
+		...connectionOptions,
+		rejectUnauthorized: false,
+		ca: undefined,
+		checkServerIdentity: (_hostname, cert) => {
+			if (cert.fingerprint === fingerprint) {
+				return undefined;
+			}
+			return new Error(`Fingerprint mismatch. expected ${fingerprint}, got ${cert.fingerprint ?? "<none>"}`);
+		},
+	};
+}
+
+describe("connectionTest", function () {
+	describe("Name resolution", function () {
+		it(`something.invalid should not be resolved`, async function () {
+			const sut = new ConnectionTest(new TranslationMock());
+			await expect(sut.resolveName("something.invalid")).to.be.rejectedWith(Error);
+		});
+
+		it(`127.0.0.1 should be resolved to 127.0.0.1`, async function () {
+			const sut = new ConnectionTest(new TranslationMock());
+			const result = await sut.resolveName("127.0.0.1");
+			expect(result).to.be.equal("127.0.0.1");
+		});
+
+		it(`localhost should be resolved to 127.0.0.1 (or ::1)`, async function () {
+			const sut = new ConnectionTest(new TranslationMock());
+			const result = await sut.resolveName("localhost");
+			expect(result).to.be.oneOf(["127.0.0.1", "::1"]);
+		});
+	});
+
+	describe("Ping", function () {
+		this.timeout(30_000);
+		it(`ping to 192.0.2.0 should fail`, async function () {
+			if (RunsInCITests) {
+				this.skip();
+			} else {
+				this.slow(10_000);
+				const sut = new ConnectionTest(new TranslationMock());
+				await expect(sut.ping("192.0.2.0")).to.be.rejected;
+			}
+		});
+
+		it(`ping to 127.0.0.1 should pass`, async function () {
+			if (RunsInCITests) {
+				this.skip();
+			} else {
+				const sut = new ConnectionTest(new TranslationMock());
+				await expect(sut.ping("127.0.0.1")).to.be.fulfilled;
+			}
+		});
+
+		it(`ping to localhost should pass`, async function () {
+			if (RunsInCITests) {
+				this.skip();
+			} else {
+				const sut = new ConnectionTest(new TranslationMock());
+				await expect(sut.ping("localhost")).to.be.fulfilled;
+			}
+		});
+
+		it(`ping to 8.8.8.8 should pass`, async function () {
+			if (RunsInCITests) {
+				this.skip();
+			} else {
+				const sut = new ConnectionTest(new TranslationMock());
+				await expect(sut.ping("8.8.8.8")).to.be.fulfilled;
+			}
+		});
+	});
+
+	describe("TLS Socket connection", function () {
+		this.timeout(60_000);
+
+		it(`shouldn't connect to 192.0.2.0`, async function () {
+			if (RunsInCITests) {
+				this.skip();
+			} else {
+				this.slow(25_000);
+				const sut = new ConnectionTest(new TranslationMock());
+				await expect(sut.connectTlsSocket("192.0.2.0", 51200)).to.be.rejected;
+			}
+		});
+
+		it(`should connect to localhost`, async function () {
+			this.slow(2_000);
+			debug("Starting mock server");
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			debug("Mock server started");
+			debug("Creating connection options");
+			const sut = new ConnectionTest(new TranslationMock());
+			debug("Connecting to localhost");
+			await expect(
+				sut.connectTlsSocket("localhost", 51200, MockServerController.getMockServerConnectionOptions()),
+			).to.be.fulfilled;
+			debug("Connected to localhost");
+		});
+
+		it(`should connect to localhost with fingerprint pinning and disabled certificate chain validation`, async function () {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const sut = new ConnectionTest(new TranslationMock());
+			const options = getFingerprintPinnedTlsOptions(MockServerController.getMockServerFingerprint());
+			await expect(sut.connectTlsSocket("localhost", 51200, options)).to.be.fulfilled;
+		});
+
+		it(`should reject localhost when fingerprint pinning does not match`, async function () {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const sut = new ConnectionTest(new TranslationMock());
+			const options = getFingerprintPinnedTlsOptions(MISMATCHED_TEST_FINGERPRINT);
+			await expect(sut.connectTlsSocket("localhost", 51200, options)).to.be.rejectedWith("Fingerprint mismatch");
+		});
+	});
+
+	describe("Login", function () {
+		this.timeout(10_000);
+		this.slow(2_000);
+
+		it(`shouldn't login with the wrong password`, async function () {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			await expect(sut.login("localhost", "wrongpwd", connectionOptions)).to.be.rejectedWith(Error);
+		});
+
+		it(`should login with the correct password`, async function () {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			await expect(sut.login("localhost", "velux123", connectionOptions)).to.be.fulfilled;
+		});
+
+		it(`should login with fingerprint pinning and disabled certificate chain validation`, async function () {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const connectionOptions = getFingerprintPinnedTlsOptions(MockServerController.getMockServerFingerprint());
+			const sut = new ConnectionTest(new TranslationMock());
+			await expect(sut.login("localhost", "velux123", connectionOptions)).to.be.fulfilled;
+		});
+	});
+
+	describe("runTests", function () {
+		it(`should fulfil`, async function () {
+			this.timeout(10_000);
+			this.slow(2_000);
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			await expect(sut.runTests("localhost", "velux123", connectionOptions)).to.be.fulfilled;
+		});
+
+		it(`should return 4 steps`, async function () {
+			this.timeout(10_000);
+			this.slow(2_000);
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+		});
+
+		it(`should fail at step 1`, async function () {
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			const step1stub = sinon.stub(sut, "resolveName").rejects();
+			const step2stub = sinon.stub(sut, "ping").rejects();
+			const step3stub = sinon.stub(sut, "connectTlsSocket").rejects();
+			const step4stub = sinon.stub(sut, "login").rejects();
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(step1stub, "Step 1").to.be.calledOnce;
+			expect(step2stub, "Step 2").not.to.be.called;
+			expect(step3stub, "Step 3").not.to.be.called;
+			expect(step4stub, "Step 4").not.to.be.called;
+			expect(result[0]).to.haveOwnProperty("run", true);
+			expect(result[0]).to.haveOwnProperty("stepOrder", 1);
+			expect(result[0]).to.haveOwnProperty("success", false);
+			expect(result[0]).to.haveOwnProperty("message");
+		});
+
+		it(`should succeed at step 1`, async function () {
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			const step1stub = sinon.stub(sut, "resolveName").resolves("127.0.0.1");
+			const step2stub = sinon.stub(sut, "ping").rejects();
+			const step3stub = sinon.stub(sut, "connectTlsSocket").rejects();
+			const step4stub = sinon.stub(sut, "login").rejects();
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(step1stub, "Step 1").to.be.calledOnce;
+			expect(step2stub, "Step 2").to.be.calledOnce;
+			expect(step3stub, "Step 3").not.to.be.called;
+			expect(step4stub, "Step 4").not.to.be.called;
+			expect(result[0]).to.haveOwnProperty("run", true);
+			expect(result[0]).to.haveOwnProperty("stepOrder", 1);
+			expect(result[0]).to.haveOwnProperty("success", true);
+			expect(result[0]).to.haveOwnProperty("result", "127.0.0.1");
+		});
+
+		it(`should fail at step 2`, async function () {
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			const step1stub = sinon.stub(sut, "resolveName").resolves("127.0.0.1");
+			const step2stub = sinon.stub(sut, "ping").rejects();
+			const step3stub = sinon.stub(sut, "connectTlsSocket").rejects();
+			const step4stub = sinon.stub(sut, "login").rejects();
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(step1stub, "Step 1").to.be.calledOnce;
+			expect(step2stub, "Step 2").to.be.calledOnce;
+			expect(step3stub, "Step 3").not.to.be.called;
+			expect(step4stub, "Step 4").not.to.be.called;
+			expect(result[1]).to.haveOwnProperty("run", true);
+			expect(result[1]).to.haveOwnProperty("stepOrder", 2);
+			expect(result[1]).to.haveOwnProperty("success", false);
+			expect(result[1]).to.haveOwnProperty("message");
+		});
+
+		it(`should succeed at step 2`, async function () {
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			const step1stub = sinon.stub(sut, "resolveName").resolves("127.0.0.1");
+			const step2stub = sinon.stub(sut, "ping").resolves(12);
+			const step3stub = sinon.stub(sut, "connectTlsSocket").rejects();
+			const step4stub = sinon.stub(sut, "login").rejects();
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(step1stub, "Step 1").to.be.calledOnce;
+			expect(step2stub, "Step 2").to.be.calledOnce;
+			expect(step3stub, "Step 3").to.be.calledOnce;
+			expect(step4stub, "Step 4").not.to.be.called;
+			expect(result[1]).to.haveOwnProperty("run", true);
+			expect(result[1]).to.haveOwnProperty("stepOrder", 2);
+			expect(result[1]).to.haveOwnProperty("success", true);
+			expect(result[1]).to.haveOwnProperty("result", 12);
+		});
+
+		it(`should fail at step 3`, async function () {
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			const step1stub = sinon.stub(sut, "resolveName").resolves("127.0.0.1");
+			const step2stub = sinon.stub(sut, "ping").resolves(12);
+			const step3stub = sinon.stub(sut, "connectTlsSocket").rejects();
+			const step4stub = sinon.stub(sut, "login").rejects();
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(step1stub, "Step 1").to.be.calledOnce;
+			expect(step2stub, "Step 2").to.be.calledOnce;
+			expect(step3stub, "Step 3").to.be.calledOnce;
+			expect(step4stub, "Step 4").not.to.be.called;
+			expect(result[2]).to.haveOwnProperty("run", true);
+			expect(result[2]).to.haveOwnProperty("stepOrder", 3);
+			expect(result[2]).to.haveOwnProperty("success", false);
+			expect(result[2]).to.haveOwnProperty("message");
+		});
+
+		it(`should succeed at step 3`, async function () {
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			const step1stub = sinon.stub(sut, "resolveName").resolves("127.0.0.1");
+			const step2stub = sinon.stub(sut, "ping").resolves(12);
+			const step3stub = sinon.stub(sut, "connectTlsSocket").resolves();
+			const step4stub = sinon.stub(sut, "login").rejects();
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(step1stub, "Step 1").to.be.calledOnce;
+			expect(step2stub, "Step 2").to.be.calledOnce;
+			expect(step3stub, "Step 3").to.be.calledOnce;
+			expect(step4stub, "Step 4").to.be.calledOnce;
+			expect(result[2]).to.haveOwnProperty("run", true);
+			expect(result[2]).to.haveOwnProperty("stepOrder", 3);
+			expect(result[2]).to.haveOwnProperty("success", true);
+			expect(result[2]).to.haveOwnProperty("message");
+		});
+
+		it(`should fail at step 4`, async function () {
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			const step1stub = sinon.stub(sut, "resolveName").resolves("127.0.0.1");
+			const step2stub = sinon.stub(sut, "ping").resolves(12);
+			const step3stub = sinon.stub(sut, "connectTlsSocket").resolves();
+			const step4stub = sinon.stub(sut, "login").rejects();
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(step1stub, "Step 1").to.be.calledOnce;
+			expect(step2stub, "Step 2").to.be.calledOnce;
+			expect(step3stub, "Step 3").to.be.calledOnce;
+			expect(step4stub, "Step 4").to.be.calledOnce;
+			expect(result[3]).to.haveOwnProperty("run", true);
+			expect(result[3]).to.haveOwnProperty("stepOrder", 4);
+			expect(result[3]).to.haveOwnProperty("success", false);
+		});
+
+		it(`should succeed at step 4`, async function () {
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			const step1stub = sinon.stub(sut, "resolveName").resolves("127.0.0.1");
+			const step2stub = sinon.stub(sut, "ping").resolves(12);
+			const step3stub = sinon.stub(sut, "connectTlsSocket").resolves();
+			const step4stub = sinon.stub(sut, "login").resolves();
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(step1stub, "Step 1").to.be.calledOnce;
+			expect(step2stub, "Step 2").to.be.calledOnce;
+			expect(step3stub, "Step 3").to.be.calledOnce;
+			expect(step4stub, "Step 4").to.be.calledOnce;
+			expect(result[3]).to.haveOwnProperty("run", true);
+			expect(result[3]).to.haveOwnProperty("stepOrder", 4);
+			expect(result[3]).to.haveOwnProperty("success", true);
+			expect(result[3]).to.haveOwnProperty("message");
+		});
+
+		it(`should call the progress callback 4 times`, async function () {
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			sinon.stub(sut, "resolveName").resolves("127.0.0.1");
+			sinon.stub(sut, "ping").resolves(12);
+			sinon.stub(sut, "connectTlsSocket").resolves();
+			sinon.stub(sut, "login").resolves();
+			const progressCallback = sinon.spy();
+			await sut.runTests("localhost", "velux123", connectionOptions, progressCallback);
+			expect(progressCallback).to.be.callCount(4);
+		});
+
+		it(`should succeed at step 1 against mock server`, async function () {
+			this.timeout(10_000);
+			this.slow(2_000);
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			sinon.stub(sut, "ping").resolves(12);
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(result[0]).to.haveOwnProperty("run", true);
+			expect(result[0]).to.haveOwnProperty("stepOrder", 1);
+			expect(result[0]).to.haveOwnProperty("success", true);
+			expect(result[0]).to.haveOwnProperty("message");
+		});
+
+		it(`should succeed at step 2 against mock server`, async function () {
+			this.timeout(10_000);
+			this.slow(2_000);
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			sinon.stub(sut, "ping").resolves(12);
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(result[1]).to.haveOwnProperty("run", true);
+			expect(result[1]).to.haveOwnProperty("stepOrder", 2);
+			expect(result[1]).to.haveOwnProperty("success", true);
+			expect(result[1]).to.haveOwnProperty("message");
+		});
+
+		it(`should succeed at step 3 against mock server`, async function () {
+			this.timeout(10_000);
+			this.slow(2_000);
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			sinon.stub(sut, "ping").resolves(12);
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(result[2]).to.haveOwnProperty("run", true);
+			expect(result[2]).to.haveOwnProperty("stepOrder", 3);
+			expect(result[2]).to.haveOwnProperty("success", true);
+			expect(result[2]).to.haveOwnProperty("message");
+		});
+
+		it(`should succeed at step 4 against mock server`, async function () {
+			this.timeout(10_000);
+			this.slow(2_000);
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			sinon.stub(sut, "ping").resolves(12);
+			const result = await sut.runTests("localhost", "velux123", connectionOptions);
+			expect(result).to.have.lengthOf(4);
+			expect(result[3]).to.haveOwnProperty("run", true);
+			expect(result[3]).to.haveOwnProperty("stepOrder", 4);
+			expect(result[3]).to.haveOwnProperty("success", true);
+			expect(result[3]).to.haveOwnProperty("message");
+		});
+	});
+});

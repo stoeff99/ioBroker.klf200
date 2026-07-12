@@ -1,13 +1,8 @@
 import { Connection } from "klf-200-api";
-import {
-	checkServerIdentity as checkServerIdentityOriginal,
-	connect,
-	type ConnectionOptions,
-	type PeerCertificate,
-	type TLSSocket,
-} from "node:tls";
+import { connect, type ConnectionOptions, type PeerCertificate, type TLSSocket } from "node:tls";
 
 const KLF200_TLS_PORT = 51200;
+export const KLF200_FACTORY_FINGERPRINT = "02:8C:23:A0:89:2B:62:98:C4:99:00:5B:D2:E7:2E:0A:70:3D:71:6A";
 const patchAppliedSymbol = Symbol.for("iobroker.klf200.tlsFingerprintPatchApplied");
 
 type FingerprintConnection = {
@@ -24,12 +19,15 @@ function createPinnedTlsConnectionOptions(
 ): ConnectionOptions {
 	return {
 		rejectUnauthorized: false,
+		requestCert: false,
 		ca: [connection.CA],
 		checkServerIdentity: (host, cert) => {
 			if (cert.fingerprint === connection.fingerprint) {
 				return undefined;
 			}
-			return checkServerIdentityOriginal(host, cert);
+			return new Error(
+				`KLF-200 certificate fingerprint mismatch. Expected ${connection.fingerprint}, got ${cert.fingerprint ?? "<none>"}.`,
+			);
 		},
 	};
 }
@@ -61,7 +59,7 @@ export function createKlf200PinnedTlsOptions(
 	const connection = new Connection(
 		hostname,
 		sslPublicKey !== undefined ? Buffer.from(sslPublicKey) : undefined,
-		sslFingerprint,
+		sslFingerprint ?? KLF200_FACTORY_FINGERPRINT,
 	);
 	return createPinnedTlsConnectionOptions(connection);
 }
