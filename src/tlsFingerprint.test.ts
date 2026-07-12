@@ -72,7 +72,7 @@ describe("tlsFingerprint", function () {
 
 			it("should connect and resolve when the fingerprint matches (authorized=true path)", async function () {
 				// eslint-disable-next-line @typescript-eslint/no-unused-vars
-				await using _mc = await MockServerController.createMockServer();
+				await using mockServerController = await MockServerController.createMockServer();
 				const conn = MockServerController.createMockServerConnect();
 				await expect(conn.loginAsync("velux123")).to.be.fulfilled;
 				await conn.logoutAsync();
@@ -80,7 +80,7 @@ describe("tlsFingerprint", function () {
 
 			it("should connect and resolve when chain validation fails but fingerprint matches (authorized=false path)", async function () {
 				// eslint-disable-next-line @typescript-eslint/no-unused-vars
-				await using _mc = await MockServerController.createMockServer();
+				await using mockServerController = await MockServerController.createMockServer();
 				const mockFingerprint = MockServerController.getMockServerFingerprint();
 				// Start from the mock-server options so mutual TLS (client key/cert) is included,
 				// then override to simulate "server cert not trusted by client" (no CA, rejectUnauthorized:false).
@@ -106,7 +106,7 @@ describe("tlsFingerprint", function () {
 
 			it("should reject when fingerprint does not match even with rejectUnauthorized: false", async function () {
 				// eslint-disable-next-line @typescript-eslint/no-unused-vars
-				await using _mc = await MockServerController.createMockServer();
+				await using mockServerController = await MockServerController.createMockServer();
 				const connectionOptions = {
 					...MockServerController.getMockServerConnectionOptions(),
 					rejectUnauthorized: false,

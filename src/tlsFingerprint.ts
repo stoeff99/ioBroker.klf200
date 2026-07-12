@@ -44,6 +44,8 @@ export function createKlf200PinnedTlsOptions(
 ): ConnectionOptions {
 	const fingerprint = sslFingerprint ?? KLF200_FACTORY_FINGERPRINT;
 	const result: ConnectionOptions = {
+		// Chain validation is intentionally disabled because the KLF-200 factory CA expired on
+		// 2026-07-12.  Peer authenticity is enforced by fingerprint pinning in checkServerIdentity.
 		rejectUnauthorized: false,
 		checkServerIdentity: (_host, cert) => {
 			if (cert.fingerprint === fingerprint) {
@@ -81,6 +83,7 @@ export function applyKlf200TlsFingerprintPatch(): void {
 		}
 
 		const effectiveConnectionOptions: ConnectionOptions = this.connectionOptions ?? {
+			// Chain validation intentionally disabled – fingerprint pinning enforces peer authenticity.
 			rejectUnauthorized: false,
 			checkServerIdentity: (_host: string, cert: PeerCertificate) => {
 				if (cert.fingerprint === this.fingerprint) {
