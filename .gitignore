@@ -34,3 +34,4 @@ admin/i18n/*/flat.txt
 #ignore .commitinfo created by ioBroker release script
 .commitinfo
 !build/klf200Adapter.js
+!tsconfig.build.json
