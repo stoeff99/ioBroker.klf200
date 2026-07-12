@@ -1,6 +1,7 @@
 import { expect } from "chai";
 import debugModule from "debug";
 import { env } from "node:process";
+import type { ConnectionOptions } from "node:tls";
 import sinon from "sinon";
 import { MockServerController } from "../test/mocks/mockServerController.js";
 import { ConnectionTest } from "./connectionTest.js";
@@ -40,6 +41,21 @@ class TranslationMock implements Translate {
 	public async translateObject(textKey: string, _context?: Record<string, unknown>): Promise<string> {
 		return Promise.resolve(textKey);
 	}
+}
+
+function getFingerprintPinnedTlsOptions(fingerprint: string): ConnectionOptions {
+	const connectionOptions = MockServerController.getMockServerConnectionOptions();
+	return {
+		...connectionOptions,
+		rejectUnauthorized: false,
+		ca: undefined,
+		checkServerIdentity: (_hostname, cert) => {
+			if (cert.fingerprint === fingerprint) {
+				return undefined;
+			}
+			return new Error(`Fingerprint mismatch. expected ${fingerprint}, got ${cert.fingerprint ?? "<none>"}`);
+		},
+	};
 }
 
 describe("connectionTest", function () {
@@ -129,6 +145,24 @@ describe("connectionTest", function () {
 			).to.be.fulfilled;
 			debug("Connected to localhost");
 		});
+
+		it(`should connect to localhost with fingerprint pinning and disabled certificate chain validation`, async function () {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const sut = new ConnectionTest(new TranslationMock());
+			const options = getFingerprintPinnedTlsOptions(MockServerController.getMockServerFingerprint());
+			await expect(sut.connectTlsSocket("localhost", 51200, options)).to.be.fulfilled;
+		});
+
+		it(`should reject localhost when fingerprint pinning does not match`, async function () {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const sut = new ConnectionTest(new TranslationMock());
+			const options = getFingerprintPinnedTlsOptions(
+				"11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44",
+			);
+			await expect(sut.connectTlsSocket("localhost", 51200, options)).to.be.rejectedWith("Fingerprint mismatch");
+		});
 	});
 
 	describe("Login", function () {
@@ -147,6 +181,14 @@ describe("connectionTest", function () {
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
 			await using mockServerController = await MockServerController.createMockServer();
 			const connectionOptions = MockServerController.getMockServerConnectionOptions();
+			const sut = new ConnectionTest(new TranslationMock());
+			await expect(sut.login("localhost", "velux123", connectionOptions)).to.be.fulfilled;
+		});
+
+		it(`should login with fingerprint pinning and disabled certificate chain validation`, async function () {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const connectionOptions = getFingerprintPinnedTlsOptions(MockServerController.getMockServerFingerprint());
 			const sut = new ConnectionTest(new TranslationMock());
 			await expect(sut.login("localhost", "velux123", connectionOptions)).to.be.fulfilled;
 		});

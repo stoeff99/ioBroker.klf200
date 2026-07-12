@@ -155,7 +155,7 @@ import { type Job, scheduleJob } from "node-schedule";
 import path from "node:path";
 import { env } from "node:process";
 import { timeout } from "promise-timeout";
-import { checkServerIdentity as checkServerIdentityOriginal, type ConnectionOptions } from "node:tls";
+import { type ConnectionOptions } from "node:tls";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ConnectionTest, ConnectionTestResult } from "./connectionTest.js";
 import { KLF200DeviceManagement } from "./deviceManagement/klf200DeviceManagement.js";
@@ -166,6 +166,7 @@ import { Setup } from "./setup.js";
 import { SetupGroups } from "./setupGroups.js";
 import { SetupProducts } from "./setupProducts.js";
 import { SetupScenes } from "./setupScenes.js";
+import { applyKlf200TlsFingerprintPatch, createKlf200PinnedTlsOptions } from "./tlsFingerprint.js";
 import type { Translate } from "./translate.js";
 import { StateHelper } from "./util/stateHelper.js";
 import { ArrayCount, convertErrorToString, waitForSessionFinishedNtfAsync } from "./util/utils.js";
@@ -197,6 +198,7 @@ declare global {
 type ConnectionWatchDogHandler = (hadError: boolean) => void;
 
 const refreshTimeoutMS = 120_000; // Wait max. 2 minutes for the notification.
+applyKlf200TlsFingerprintPatch();
 
 type ResponsiveProductResult = {
 	NodeID: number;
@@ -611,7 +613,7 @@ export class Klf200 extends utils.Adapter implements HasConnectionInterface, Has
 			// Setup connection and initialize objects and states
 			if (!this.config.advancedSSLConfiguration) {
 				this.log.debug("Regular login.");
-				this._Connection = new Connection(this.config.host);
+				this._Connection = new Connection(this.config.host, createKlf200PinnedTlsOptions(this.config.host));
 			} else if (this.config.SSLConnectionOptions) {
 				this.log.debug(
 					`Debug login with SSL ConnectionOptions: ${JSON.stringify(this.config.SSLConnectionOptions)}`,
@@ -623,8 +625,11 @@ export class Klf200 extends utils.Adapter implements HasConnectionInterface, Has
 				);
 				this._Connection = new Connection(
 					this.config.host,
-					Buffer.from(this.config.SSLPublicKey),
-					this.config.SSLFingerprint,
+					createKlf200PinnedTlsOptions(
+						this.config.host,
+						this.config.SSLPublicKey,
+						this.config.SSLFingerprint,
+					),
 				);
 			}
 
@@ -2058,23 +2063,11 @@ export class Klf200 extends utils.Adapter implements HasConnectionInterface, Has
 	}
 
 	private createConnectionOptions(data: ConnectionTestMessage): ConnectionOptions {
-		const klf200Connection = new Connection(
+		return createKlf200PinnedTlsOptions(
 			data.hostname,
-			data.advancedSSLConfiguration?.sslPublicKey !== undefined
-				? Buffer.from(data.advancedSSLConfiguration?.sslPublicKey)
-				: undefined,
+			data.advancedSSLConfiguration?.sslPublicKey,
 			data.advancedSSLConfiguration?.sslFingerprint,
 		);
-		return {
-			rejectUnauthorized: false,
-			ca: klf200Connection.CA,
-			checkServerIdentity: (host, cert) => {
-				if (cert.fingerprint === klf200Connection.fingerprint) {
-					return undefined;
-				}
-				return checkServerIdentityOriginal(host, cert);
-			},
-		};
 	}
 
 	/**
