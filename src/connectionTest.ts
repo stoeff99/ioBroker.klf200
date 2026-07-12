@@ -48,10 +48,10 @@ export interface IConnectionTest {
 	/**
 	 * Pings the given IP address and returns the latency in milliseconds.
 	 *
-	 * @param ipadress The IP address to ping.
+	 * @param ipaddress The IP address to ping.
 	 * @returns A promise that resolves to the latency in milliseconds.
 	 */
-	ping(ipadress: string): Promise<number>;
+	ping(ipaddress: string): Promise<number>;
 	/**
 	 * Establishes a secure connection to the given hostname and port.
 	 *
@@ -114,16 +114,16 @@ export class ConnectionTest implements IConnectionTest {
 	/**
 	 * Pings the given IP address and returns the latency in milliseconds.
 	 *
-	 * @param ipadress The IP address to ping.
+	 * @param ipaddress The IP address to ping.
 	 * @returns A promise that resolves to the latency in milliseconds.
 	 */
-	async ping(ipadress: string): Promise<number> {
-		debug(`Pinging IP address: ${ipadress}`);
+	async ping(ipaddress: string): Promise<number> {
+		debug(`Pinging IP address: ${ipaddress}`);
 		const pingConfig: ping.PingConfig = {
 			packetSize: 64,
 		};
 		try {
-			const result = await ping.promise.probe(ipadress, pingConfig);
+			const result = await ping.promise.probe(ipaddress, pingConfig);
 
 			if (!result.alive) {
 				debug(`Ping failed`);
@@ -160,35 +160,33 @@ export class ConnectionTest implements IConnectionTest {
 			let sckt: TLSSocket | undefined;
 			try {
 				sckt = connect(port, hostname, effectiveConnectionOptions, () => {
-					if (sckt?.authorized) {
-						debug("TLS connection authorized");
+					const cert = sckt?.getPeerCertificate();
+					const checkServerIdentity = effectiveConnectionOptions.checkServerIdentity;
+					const hasPeerCertificate = cert !== undefined && Object.keys(cert).length > 0;
+					let identityError: Error | undefined;
+					if (checkServerIdentity !== undefined && hasPeerCertificate) {
+						try {
+							identityError = checkServerIdentity(hostname, cert) ?? undefined;
+						} catch (error) {
+							identityError = error as Error;
+						}
+					} else if (checkServerIdentity !== undefined) {
+						identityError = new Error("TLS peer certificate missing.");
+					} else {
+						identityError = sckt?.authorized ? undefined : sckt?.authorizationError;
+					}
+
+					if (identityError === undefined) {
+						debug("TLS connection accepted by pinned certificate.");
 						sckt?.destroy();
 						sckt = undefined;
 						resolve();
 					} else {
-						const cert = sckt?.getPeerCertificate();
-						const checkServerIdentity = effectiveConnectionOptions.checkServerIdentity;
-						let identityError: Error | undefined;
-						if (cert !== undefined && Object.keys(cert).length > 0 && checkServerIdentity !== undefined) {
-							try {
-								identityError = checkServerIdentity(hostname, cert) ?? undefined;
-							} catch (error) {
-								identityError = error as Error;
-							}
-						} else {
-							identityError = sckt?.authorizationError;
-						}
-
-						if (identityError === undefined) {
-							debug("TLS connection accepted by pinned certificate.");
-							sckt?.destroy();
-							sckt = undefined;
-							resolve();
-						} else {
-							debug(`TLS connection authorization error: ${identityError.message}`);
-							reject(identityError);
-							sckt = undefined;
-						}
+						const error =
+							identityError ?? sckt?.authorizationError ?? new Error("TLS authorization failed.");
+						debug(`TLS connection authorization error: ${error.message}`);
+						reject(error);
+						sckt = undefined;
 					}
 				});
 				sckt.on("error", (error: Error) => {
@@ -287,8 +285,8 @@ export class ConnectionTest implements IConnectionTest {
 				run: true,
 				success: true,
 				message: await this.translation.translate("connection-test-message-name-lookup-success", {
-					hostname: hostname,
-					ipaddress: ipaddress,
+					hostname,
+					ipaddress,
 				}),
 				result: ipaddress,
 			};
@@ -301,7 +299,6 @@ export class ConnectionTest implements IConnectionTest {
 					...result[1],
 					run: true,
 					success: true,
-					// message: `Ping was successful after ${ms} milliseconds.`,
 					message: await this.translation.translate("connection-test-message-ping-success", {
 						ms: ms.toString(),
 					}),
@@ -357,7 +354,7 @@ export class ConnectionTest implements IConnectionTest {
 					run: true,
 					success: false,
 					message: await this.translation.translate("connection-test-message-ping-failure", {
-						ipaddress: ipaddress,
+						ipaddress,
 						message: (error as Error).message,
 					}),
 					result: error as Error,
@@ -369,7 +366,7 @@ export class ConnectionTest implements IConnectionTest {
 				run: true,
 				success: false,
 				message: await this.translation.translate("connection-test-message-name-lookup-failure", {
-					hostname: hostname,
+					hostname,
 				}),
 				result: error as Error,
 			};

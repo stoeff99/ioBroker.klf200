@@ -44,7 +44,7 @@ class TranslationMock implements Translate {
 	}
 }
 
-function getFingerprintPinnedTlsOptions(fingerprint: string): ConnectionOptions {
+function getFingerprintPinnedTlsOptions(_hostname: string, fingerprint: string): ConnectionOptions {
 	const connectionOptions = MockServerController.getMockServerConnectionOptions();
 	return {
 		...connectionOptions,
@@ -151,7 +151,10 @@ describe("connectionTest", function () {
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
 			await using mockServerController = await MockServerController.createMockServer();
 			const sut = new ConnectionTest(new TranslationMock());
-			const options = getFingerprintPinnedTlsOptions(MockServerController.getMockServerFingerprint());
+			const options = getFingerprintPinnedTlsOptions(
+				"localhost",
+				MockServerController.getMockServerFingerprint(),
+			);
 			await expect(sut.connectTlsSocket("localhost", 51200, options)).to.be.fulfilled;
 		});
 
@@ -159,7 +162,7 @@ describe("connectionTest", function () {
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
 			await using mockServerController = await MockServerController.createMockServer();
 			const sut = new ConnectionTest(new TranslationMock());
-			const options = getFingerprintPinnedTlsOptions(MISMATCHED_TEST_FINGERPRINT);
+			const options = getFingerprintPinnedTlsOptions("localhost", MISMATCHED_TEST_FINGERPRINT);
 			await expect(sut.connectTlsSocket("localhost", 51200, options)).to.be.rejectedWith("Fingerprint mismatch");
 		});
 	});
@@ -187,7 +190,10 @@ describe("connectionTest", function () {
 		it(`should login with fingerprint pinning and disabled certificate chain validation`, async function () {
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
 			await using mockServerController = await MockServerController.createMockServer();
-			const connectionOptions = getFingerprintPinnedTlsOptions(MockServerController.getMockServerFingerprint());
+			const connectionOptions = getFingerprintPinnedTlsOptions(
+				"localhost",
+				MockServerController.getMockServerFingerprint(),
+			);
 			const sut = new ConnectionTest(new TranslationMock());
 			await expect(sut.login("localhost", "velux123", connectionOptions)).to.be.fulfilled;
 		});

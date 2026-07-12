@@ -2128,7 +2128,7 @@ export class Klf200 extends utils.Adapter implements HasConnectionInterface, Has
 	 * @param err The error to convert to a string.
 	 */
 	getErrorMessage(err: Error | string): string {
-		// Irgendwo gibt es wohl einen Fehler ohne Message
+		// Sometimes an error is raised without a message
 		if (err == null) {
 			return "undefined";
 		}
@@ -2166,7 +2166,7 @@ export class Klf200 extends utils.Adapter implements HasConnectionInterface, Has
 	 * @param error - The error that occurred.
 	 */
 	onUnhandledError(error: Error): void {
-		((this && this.log) || console).error(`Unhandled exception occured: ${JSON.stringify(error)}`);
+		((this && this.log) || console).error(`Unhandled exception occurred: ${JSON.stringify(error)}`);
 		this.terminate("unhandled exception", 1);
 	}
 }

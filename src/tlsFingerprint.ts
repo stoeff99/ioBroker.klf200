@@ -19,7 +19,6 @@ function createPinnedTlsConnectionOptions(
 ): ConnectionOptions {
 	return {
 		rejectUnauthorized: false,
-		requestCert: false,
 		ca: [connection.CA],
 		checkServerIdentity: (host, cert) => {
 			if (cert.fingerprint === connection.fingerprint) {
