@@ -8,7 +8,6 @@ import { scheduleJob } from "node-schedule";
 import path from "node:path";
 import { env } from "node:process";
 import { timeout } from "promise-timeout";
-import { checkServerIdentity as checkServerIdentityOriginal } from "node:tls";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ConnectionTest, ConnectionTestResult } from "./connectionTest.js";
 import { KLF200DeviceManagement } from "./deviceManagement/klf200DeviceManagement.js";
@@ -18,6 +17,7 @@ import { SetupGroups } from "./setupGroups.js";
 import { SetupProducts } from "./setupProducts.js";
 import { SetupScenes } from "./setupScenes.js";
 import { StateHelper } from "./util/stateHelper.js";
+import { FINGERPRINT_MISMATCH_TEXT, configureConnectionWithTlsFingerprintPinning, createTlsConnectionOptionsWithFingerprintPinning, } from "./util/tlsFingerprintPinning.js";
 import { ArrayCount, convertErrorToString, waitForSessionFinishedNtfAsync } from "./util/utils.js";
 const refreshTimeoutMS = 120_000; // Wait max. 2 minutes for the notification.
 /**
@@ -325,6 +325,12 @@ export class Klf200 extends utils.Adapter {
             this.log.info(`Host: ${this.config.host}`);
             await this.setupTestConnectionStates();
             // Setup connection and initialize objects and states
+            const sslPublicKey = this.config.advancedSSLConfiguration && this.config.SSLPublicKey.trim() !== ""
+                ? Buffer.from(this.config.SSLPublicKey)
+                : undefined;
+            const sslFingerprint = this.config.advancedSSLConfiguration && this.config.SSLFingerprint.trim() !== ""
+                ? this.config.SSLFingerprint
+                : undefined;
             if (!this.config.advancedSSLConfiguration) {
                 this.log.debug("Regular login.");
                 this._Connection = new Connection(this.config.host);
@@ -335,8 +341,9 @@ export class Klf200 extends utils.Adapter {
             }
             else {
                 this.log.debug(`Advanced login with SSL public key: ${this.config.SSLPublicKey} and fingerprint: ${this.config.SSLFingerprint}`);
-                this._Connection = new Connection(this.config.host, Buffer.from(this.config.SSLPublicKey), this.config.SSLFingerprint);
+                this._Connection = new Connection(this.config.host, sslPublicKey, sslFingerprint);
             }
+            configureConnectionWithTlsFingerprintPinning(this._Connection, this.config.SSLConnectionOptions, sslPublicKey, sslFingerprint);
             // Overwrite the default timeout for the sendFrameAsync method
             const SEND_FRAME_TIMEOUT = env.SEND_FRAME_TIMEOUT;
             if (SEND_FRAME_TIMEOUT) {
@@ -357,9 +364,15 @@ export class Klf200 extends utils.Adapter {
                 await this.Connection?.loginAsync(this.config.password);
             }
             catch (error) {
-                this.log.error(`${error}`);
+                const errorMessage = convertErrorToString(error);
+                this.log.error(errorMessage);
                 this.log.debug(`${error.stack}`);
-                this.log.error(`Login to KLF-200 device at ${this.config.host} failed.`);
+                if (errorMessage.includes(FINGERPRINT_MISMATCH_TEXT)) {
+                    this.log.error(`TLS fingerprint check for KLF-200 device at ${this.config.host} failed.`);
+                }
+                else {
+                    this.log.error(`Login to KLF-200 device at ${this.config.host} failed.`);
+                }
                 this.log.error(`Please use the Test Connection button in the settings dialog of the adapter.`);
                 return;
             }
@@ -587,9 +600,14 @@ export class Klf200 extends utils.Adapter {
                 await this.setState("info.connection", true, true);
             }
             catch (e) {
-                this.log.error(`Login to KLF-200 device at ${this.config.host} failed.`);
                 const result = convertErrorToString(e);
                 this.log.error(result);
+                if (result.includes(FINGERPRINT_MISMATCH_TEXT)) {
+                    this.log.error(`TLS fingerprint check for KLF-200 device at ${this.config.host} failed.`);
+                }
+                else {
+                    this.log.error(`Login to KLF-200 device at ${this.config.host} failed.`);
+                }
                 // Wait a second before retry
                 await this.delay(1000);
             }
@@ -1301,19 +1319,16 @@ export class Klf200 extends utils.Adapter {
         });
     }
     createConnectionOptions(data) {
-        const klf200Connection = new Connection(data.hostname, data.advancedSSLConfiguration?.sslPublicKey !== undefined
-            ? Buffer.from(data.advancedSSLConfiguration?.sslPublicKey)
-            : undefined, data.advancedSSLConfiguration?.sslFingerprint);
-        return {
-            rejectUnauthorized: false,
-            ca: klf200Connection.CA,
-            checkServerIdentity: (host, cert) => {
-                if (cert.fingerprint === klf200Connection.fingerprint) {
-                    return undefined;
-                }
-                return checkServerIdentityOriginal(host, cert);
-            },
-        };
+        const publicKey = data.advancedSSLConfiguration?.sslPublicKey !== undefined &&
+            data.advancedSSLConfiguration.sslPublicKey.trim() !== ""
+            ? Buffer.from(data.advancedSSLConfiguration.sslPublicKey)
+            : undefined;
+        const fingerprint = data.advancedSSLConfiguration?.sslFingerprint !== undefined &&
+            data.advancedSSLConfiguration.sslFingerprint.trim() !== ""
+            ? data.advancedSSLConfiguration.sslFingerprint
+            : undefined;
+        const klf200Connection = new Connection(data.hostname, publicKey, fingerprint);
+        return createTlsConnectionOptionsWithFingerprintPinning(klf200Connection.fingerprint, undefined, klf200Connection.CA);
     }
     /**
      * Some message was sent to this instance over message box. Used by email, pushover, text2speech, ...

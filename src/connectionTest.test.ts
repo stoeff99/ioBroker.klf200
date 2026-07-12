@@ -129,6 +129,32 @@ describe("connectionTest", function () {
 			).to.be.fulfilled;
 			debug("Connected to localhost");
 		});
+
+		it(`should connect to localhost with manual fingerprint validation`, async function () {
+			this.slow(2_000);
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const sut = new ConnectionTest(new TranslationMock());
+			await expect(
+				sut.connectTlsSocket("localhost", 51200, {
+					rejectUnauthorized: false,
+					checkServerIdentity: () => undefined,
+				}),
+			).to.be.fulfilled;
+		});
+
+		it(`should fail localhost with fingerprint mismatch`, async function () {
+			this.slow(2_000);
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const sut = new ConnectionTest(new TranslationMock());
+			await expect(
+				sut.connectTlsSocket("localhost", 51200, {
+					rejectUnauthorized: false,
+					checkServerIdentity: () => new Error("KLF200 certificate fingerprint mismatch"),
+				}),
+			).to.be.rejectedWith("KLF200 certificate fingerprint mismatch");
+		});
 	});
 
 	describe("Login", function () {
@@ -149,6 +175,32 @@ describe("connectionTest", function () {
 			const connectionOptions = MockServerController.getMockServerConnectionOptions();
 			const sut = new ConnectionTest(new TranslationMock());
 			await expect(sut.login("localhost", "velux123", connectionOptions)).to.be.fulfilled;
+		});
+
+		it(`should login with the correct password using manual fingerprint validation`, async function () {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const sut = new ConnectionTest(new TranslationMock());
+			const connectionOptions = {
+				...MockServerController.getMockServerConnectionOptions(),
+				rejectUnauthorized: false,
+				checkServerIdentity: () => undefined,
+			};
+			await expect(sut.login("localhost", "velux123", connectionOptions)).to.be.fulfilled;
+		});
+
+		it(`shouldn't login when fingerprint validation fails`, async function () {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const sut = new ConnectionTest(new TranslationMock());
+			const connectionOptions = {
+				...MockServerController.getMockServerConnectionOptions(),
+				rejectUnauthorized: false,
+				checkServerIdentity: () => new Error("KLF200 certificate fingerprint mismatch"),
+			};
+			await expect(sut.login("localhost", "velux123", connectionOptions)).to.be.rejectedWith(
+				"KLF200 certificate fingerprint mismatch",
+			);
 		});
 	});
 

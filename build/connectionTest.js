@@ -3,6 +3,7 @@ import { lookup } from "dns/promises";
 import { Connection } from "klf-200-api";
 import { connect } from "node:tls";
 import ping from "ping";
+import { configureConnectionWithTlsFingerprintPinning, getTlsAuthorizationError, } from "./util/tlsFingerprintPinning.js";
 const debug = debugModule("connectionTest");
 /**
  * Represents the result of a connection test step.
@@ -102,15 +103,21 @@ export class ConnectionTest {
             let sckt;
             try {
                 sckt = connect(port, hostname, connectionOptions, () => {
-                    if (sckt?.authorized) {
+                    if (sckt === undefined) {
+                        reject(new Error("TLS socket was closed unexpectedly."));
+                        return;
+                    }
+                    const authorizationError = getTlsAuthorizationError(sckt, hostname, connectionOptions);
+                    if (authorizationError === undefined) {
                         debug("TLS connection authorized");
                         sckt?.destroy();
                         sckt = undefined;
                         resolve();
                     }
                     else {
-                        debug(`TLS connection authorization error: ${sckt?.authorizationError.message}`);
-                        reject(sckt?.authorizationError);
+                        debug(`TLS connection authorization error: ${authorizationError.message}`);
+                        sckt?.destroy();
+                        reject(authorizationError);
                         sckt = undefined;
                     }
                 });
@@ -137,7 +144,8 @@ export class ConnectionTest {
      * @returns A promise that resolves when the login is successful.
      */
     async login(hostname, password, connectionOptions) {
-        const connection = new Connection(hostname, connectionOptions);
+        const connection = connectionOptions === undefined ? new Connection(hostname) : new Connection(hostname, connectionOptions);
+        configureConnectionWithTlsFingerprintPinning(connection, connectionOptions);
         try {
             await connection.loginAsync(password);
         }
