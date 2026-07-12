@@ -3,6 +3,7 @@ import { lookup } from "dns/promises";
 import { Connection } from "klf-200-api";
 import { connect, type ConnectionOptions, type TLSSocket } from "node:tls";
 import ping from "ping";
+import { applyKlf200TlsFingerprintPatch } from "./tlsFingerprint.js";
 import type { Translate } from "./translate.js";
 
 const debug = debugModule("connectionTest");
@@ -165,8 +166,32 @@ export class ConnectionTest implements IConnectionTest {
 						sckt?.destroy();
 						sckt = undefined;
 						resolve();
-					},
-				);
+					} else {
+						const cert = sckt?.getPeerCertificate();
+						const checkServerIdentity = connectionOptions?.checkServerIdentity;
+						let identityError: Error | undefined;
+						if (cert !== undefined && Object.keys(cert).length > 0 && checkServerIdentity !== undefined) {
+							try {
+								identityError = checkServerIdentity(hostname, cert) ?? undefined;
+							} catch (error) {
+								identityError = error as Error;
+							}
+						} else {
+							identityError = sckt?.authorizationError;
+						}
+
+						if (identityError === undefined) {
+							debug("TLS connection accepted by pinned certificate.");
+							sckt?.destroy();
+							sckt = undefined;
+							resolve();
+						} else {
+							debug(`TLS connection authorization error: ${identityError.message}`);
+							reject(identityError);
+							sckt = undefined;
+						}
+					}
+				});
 				sckt.on("error", (error: Error) => {
 					debug(`TLS connection error: ${error.message}`);
 					reject(error);
@@ -182,11 +207,21 @@ export class ConnectionTest implements IConnectionTest {
 	}
 
 	async login(hostname: string, password: string, connectionOptions?: ConnectionOptions): Promise<void> {
-		const connection = new Connection(hostname, connectionOptions!);
+		const connection =
+			connectionOptions !== undefined ? new Connection(hostname, connectionOptions) : new Connection(hostname);
+		let loggedIn = false;
 		try {
 			await connection.loginAsync(password);
+			loggedIn = true;
 		} finally {
-			await connection.logoutAsync();
+			if (loggedIn) {
+				await connection.logoutAsync();
+			} else {
+				await Promise.race([
+					connection.logoutAsync().catch(() => undefined),
+					new Promise<void>(resolve => setTimeout(resolve, 1000)),
+				]);
+			}
 		}
 	}
 

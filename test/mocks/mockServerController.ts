@@ -1,5 +1,5 @@
 import { type ChildProcess, fork } from "child_process";
-import { randomUUID } from "crypto";
+import { X509Certificate, randomUUID } from "crypto";
 import debugModule from "debug";
 import deepEqual from "deep-eql";
 import { readFileSync } from "fs";
@@ -47,6 +47,11 @@ export class MockServerController {
 			key: readFileSync(join(__dirname, "mockServer", "client1-key.pem")),
 			cert: readFileSync(join(__dirname, "mockServer", "client1-crt.pem")),
 		};
+	}
+
+	static getMockServerFingerprint(): string {
+		const certificate = readFileSync(join(__dirname, "mockServer", "server-crt.pem"));
+		return new X509Certificate(certificate).fingerprint;
 	}
 
 	static createMockServerConnect(): IConnection {
