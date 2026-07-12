@@ -195,8 +195,6 @@ declare global {
 	}
 }
 
-const KLF200_FINGERPRINT = "02:8C:23:A0:89:2B:62:98:C4:99:00:5B:D2:E7:2E:0A:70:3D:71:6A";
-
 type ConnectionWatchDogHandler = (hadError: boolean) => void;
 
 const refreshTimeoutMS = 120_000; // Wait max. 2 minutes for the notification.
@@ -2072,4 +2070,103 @@ export class Klf200 extends utils.Adapter implements HasConnectionInterface, Has
 		);
 	}
 
-// ... keep everything else unchanged
+	/**
+	 * Some message was sent to this instance over message box. Used by email, pushover, text2speech, ...
+	 * Using this method requires "common.message" property to be set to true in io-package.json
+	 *
+	 * @param obj The received message
+	 */
+	private onMessage(obj: ioBroker.Message): void {
+		this.log.debug(`Message received: ${JSON.stringify(obj)}`);
+
+		if (typeof obj === "object" && obj.message) {
+			if (obj.command === "ConnectionTest") {
+				this.handleMessageConnectionTest(obj).catch(error => this.log.error((error as Error).message));
+			}
+		}
+	}
+
+	private async handleMessageConnectionTest(obj: ioBroker.Message): Promise<void> {
+		const data: ConnectionTestMessage = obj.message as ConnectionTestMessage;
+		this.log.info(`Starting connection test...`);
+
+		try {
+			await this.setState("TestConnection.testResults", "[]", true);
+			await this.setState("TestConnection.running", true, true);
+			const result = await this.runConnectionTests(
+				data.hostname,
+				this.decrypt(data.password),
+				this.createConnectionOptions(data),
+				async (progress: ConnectionTestResult[]): Promise<void> => {
+					try {
+						this.logLastConnectionTestResultStep(progress);
+						const cleansedProgress = this.convertProgressErrors(progress);
+						await this.setState("TestConnection.testResults", JSON.stringify(cleansedProgress), true);
+					} catch (error: any) {
+						this.log.error(`Error during connection test: ${(error as Error).message}`);
+					}
+				},
+			);
+			// Send the final result
+			this.logLastConnectionTestResultStep(result);
+			const cleansedResult = this.convertProgressErrors(result);
+			await this.setState("TestConnection.testResults", JSON.stringify(cleansedResult), true);
+			this.sendTo(obj.from, obj.command, cleansedResult, obj.callback);
+		} catch (error: any) {
+			this.log.error(`Error during connection test: ${(error as Error).message}`);
+		} finally {
+			await this.setState("TestConnection.running", false, true);
+		}
+	}
+
+	/**
+	 * Returns a string representation of the given error.
+	 * If the error is a string, it is returned as-is.
+	 * If the error is an Error, its message is returned if available, otherwise its name is returned if available, otherwise toString() is used.
+	 * If the error is null or undefined, "undefined" is returned.
+	 *
+	 * @param err The error to convert to a string.
+	 */
+	getErrorMessage(err: Error | string): string {
+		// Sometimes an error is raised without a message
+		if (err == null) {
+			return "undefined";
+		}
+		if (typeof err === "string") {
+			return err;
+		}
+		if (err.message != null) {
+			return err.message;
+		}
+		if (err.name != null) {
+			return err.name;
+		}
+		return err.toString();
+	}
+
+	/**
+	 * This function is called when an unhandled promise rejection occurs. It logs the
+	 * error and causes the adapter to terminate.
+	 *
+	 * @param reason - The reason for the promise rejection.
+	 * @param promise - The promise that was rejected.
+	 */
+	onUnhandledRejection(reason: object | null | undefined, promise: Promise<any>): void {
+		((this && this.log) || console).error(
+			`Unhandled promise rejection detected. reason: ${JSON.stringify(reason)}, promise: ${JSON.stringify(
+				promise,
+			)}`,
+		);
+		this.terminate("unhandled promise rejection", 1);
+	}
+
+	/**
+	 * This function is called when an unhandled error occurs. It logs the error and causes the adapter to terminate.
+	 *
+	 * @param error - The error that occurred.
+	 */
+	onUnhandledError(error: Error): void {
+		((this && this.log) || console).error(`Unhandled exception occurred: ${JSON.stringify(error)}`);
+		this.terminate("unhandled exception", 1);
+	}
+}
