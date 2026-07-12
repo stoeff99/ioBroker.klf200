@@ -10,6 +10,7 @@ import type { Translate } from "./translate.js";
 const debug = debugModule("testing:connectionTest");
 
 const RunsInCITests = env.CI === "true";
+const MISMATCHED_TEST_FINGERPRINT = "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44";
 
 class TranslationMock implements Translate {
 	translateTo(language: ioBroker.Languages, textKey: string, _context?: Record<string, string>): Promise<string> {
@@ -158,9 +159,7 @@ describe("connectionTest", function () {
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
 			await using mockServerController = await MockServerController.createMockServer();
 			const sut = new ConnectionTest(new TranslationMock());
-			const options = getFingerprintPinnedTlsOptions(
-				"11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44",
-			);
+			const options = getFingerprintPinnedTlsOptions(MISMATCHED_TEST_FINGERPRINT);
 			await expect(sut.connectTlsSocket("localhost", 51200, options)).to.be.rejectedWith("Fingerprint mismatch");
 		});
 	});

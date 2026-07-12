@@ -81,7 +81,7 @@ export function applyKlf200TlsFingerprintPatch(): void {
 			return Promise.resolve();
 		}
 
-		const connectionOptions = this.connectionOptions ?? createPinnedTlsConnectionOptions(this);
+		const effectiveConnectionOptions = this.connectionOptions ?? createPinnedTlsConnectionOptions(this);
 
 		return await new Promise<void>((resolve, reject) => {
 			const loginErrorHandler = (error: Error): void => {
@@ -90,7 +90,7 @@ export function applyKlf200TlsFingerprintPatch(): void {
 			};
 
 			try {
-				this.sckt = connect(KLF200_TLS_PORT, this.host, connectionOptions, () => {
+				this.sckt = connect(KLF200_TLS_PORT, this.host, effectiveConnectionOptions, () => {
 					if (this.sckt?.authorized) {
 						this.sckt?.off("error", loginErrorHandler);
 						resolve();
@@ -102,10 +102,10 @@ export function applyKlf200TlsFingerprintPatch(): void {
 					if (
 						cert !== undefined &&
 						Object.keys(cert).length > 0 &&
-						connectionOptions.checkServerIdentity !== undefined
+						effectiveConnectionOptions.checkServerIdentity !== undefined
 					) {
 						serverIdentityError = runServerIdentityCheck(
-							connectionOptions.checkServerIdentity,
+							effectiveConnectionOptions.checkServerIdentity,
 							this.host,
 							cert,
 						);

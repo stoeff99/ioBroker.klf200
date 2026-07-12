@@ -213,7 +213,8 @@ export class ConnectionTest implements IConnectionTest {
 	 * @returns A promise that resolves when the login is successful.
 	 */
 	async login(hostname: string, password: string, connectionOptions?: ConnectionOptions): Promise<void> {
-		const connection = new Connection(hostname, connectionOptions!);
+		const connection =
+			connectionOptions !== undefined ? new Connection(hostname, connectionOptions) : new Connection(hostname);
 		let loggedIn = false;
 		try {
 			await connection.loginAsync(password);
@@ -221,6 +222,11 @@ export class ConnectionTest implements IConnectionTest {
 		} finally {
 			if (loggedIn) {
 				await connection.logoutAsync();
+			} else {
+				await Promise.race([
+					connection.logoutAsync().catch(() => undefined),
+					new Promise<void>(resolve => setTimeout(resolve, 1000)),
+				]);
 			}
 		}
 	}
