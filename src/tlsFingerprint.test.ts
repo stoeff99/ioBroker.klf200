@@ -134,7 +134,7 @@ describe("tlsFingerprint", function () {
 				const baseOptions = MockServerController.getMockServerConnectionOptions();
 				const connectionOptions = {
 					...baseOptions,
-					rejectUnauthorized: false as const,
+					rejectUnauthorized: false as const, // lgtm[js/disabling-certificate-validation]
 					ca: undefined, // no CA → chain validation fails → authorized will be false
 					checkServerIdentity: undefined,
 				};

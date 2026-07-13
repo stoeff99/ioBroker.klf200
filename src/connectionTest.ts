@@ -196,8 +196,6 @@ export class ConnectionTest implements IConnectionTest {
 						sckt = undefined;
 						resolve();
 					} else {
-						// identityError is always defined here (checked above), so the fallback
-						// new Error(...) is unreachable; kept for type-safety.
 						const error = identityError;
 						debug(`TLS connection authorization error: ${error.message}`);
 						reject(error);
