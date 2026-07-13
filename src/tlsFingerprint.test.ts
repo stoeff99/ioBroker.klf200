@@ -123,6 +123,25 @@ describe("tlsFingerprint", function () {
 				const conn = new Connection("localhost", connectionOptions);
 				await expect(conn.loginAsync("velux123")).to.be.rejectedWith(/fingerprint mismatch/);
 			});
+
+			it("should connect and resolve when rejectUnauthorized is false and no custom checkServerIdentity (expired-cert scenario)", async function () {
+				// Simulates the expired-factory-CA scenario: rejectUnauthorized: false is set but no
+				// custom checkServerIdentity is provided.  The patch must accept the connection instead
+				// of rejecting with CERT_HAS_EXPIRED because the caller has explicitly opted in to
+				// accepting invalid/expired certificate chains.
+				// eslint-disable-next-line @typescript-eslint/no-unused-vars
+				await using mockServerController = await MockServerController.createMockServer();
+				const baseOptions = MockServerController.getMockServerConnectionOptions();
+				const connectionOptions = {
+					...baseOptions,
+					rejectUnauthorized: false as const, // lgtm[js/disabling-certificate-validation]
+					ca: undefined, // no CA → chain validation fails → authorized will be false
+					checkServerIdentity: undefined,
+				};
+				const conn = new Connection("localhost", connectionOptions);
+				await expect(conn.loginAsync("velux123")).to.be.fulfilled;
+				await conn.logoutAsync();
+			});
 		});
 	});
 });

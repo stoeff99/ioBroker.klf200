@@ -165,6 +165,25 @@ describe("connectionTest", function () {
 			const options = getFingerprintPinnedTlsOptions("localhost", MISMATCHED_TEST_FINGERPRINT);
 			await expect(sut.connectTlsSocket("localhost", 51200, options)).to.be.rejectedWith("Fingerprint mismatch");
 		});
+
+		it(`should connect to localhost with rejectUnauthorized false and no custom checkServerIdentity (expired-cert scenario)`, async function () {
+			// Simulates the expired-factory-CA scenario: rejectUnauthorized: false is set but no
+			// custom checkServerIdentity is provided.  connectTlsSocket must accept the connection
+			// instead of rejecting with the chain error because the caller has explicitly opted in.
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars -- We need the side effect of having a process listening on localhost:51200
+			await using mockServerController = await MockServerController.createMockServer();
+			const sut = new ConnectionTest(new TranslationMock());
+			const baseOptions = MockServerController.getMockServerConnectionOptions();
+			const options: ConnectionOptions = {
+				...baseOptions,
+				// Intentionally disabled for this test: simulates an expired cert chain accepted by
+				// the user via rejectUnauthorized: false.  This is the scenario under test.
+				rejectUnauthorized: false, // lgtm[js/disabling-certificate-validation]
+				ca: undefined, // no CA → chain validation fails → socket.authorized will be false
+				checkServerIdentity: undefined,
+			};
+			await expect(sut.connectTlsSocket("localhost", 51200, options)).to.be.fulfilled;
+		});
 	});
 
 	describe("Login", function () {

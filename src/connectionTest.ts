@@ -156,34 +156,47 @@ export class ConnectionTest implements IConnectionTest {
 	async connectTlsSocket(hostname: string, port: number, connectionOptions?: ConnectionOptions): Promise<void> {
 		debug(`Connecting to TLS socket at ${hostname}:${port}`);
 		const effectiveConnectionOptions = connectionOptions ?? createKlf200PinnedTlsOptions(hostname);
+		// Strip checkServerIdentity from socket-level options so the TLS handshake always
+		// completes (even with an expired cert chain when rejectUnauthorized: false).
+		// The identity check is run manually in the secureConnect callback below.
+		const { checkServerIdentity: userIdentityCheck } = effectiveConnectionOptions;
+		const socketConnectionOptions: ConnectionOptions = {
+			...effectiveConnectionOptions,
+			// Always return undefined (no error) so the TLS handshake completes even when the
+			// cert chain is invalid (e.g. expired factory CA).  The real check is done manually
+			// in the secureConnect callback below – mirroring the approach used by the klf-200-api
+			// connection patch in tlsFingerprint.ts.
+			checkServerIdentity: () => undefined,
+		};
 		return new Promise<void>((resolve, reject) => {
 			let sckt: TLSSocket | undefined;
 			try {
-				sckt = connect(port, hostname, effectiveConnectionOptions, () => {
+				sckt = connect(port, hostname, socketConnectionOptions, () => {
 					const cert = sckt?.getPeerCertificate();
-					const checkServerIdentity = effectiveConnectionOptions.checkServerIdentity;
 					const hasPeerCertificate = cert !== undefined && Object.keys(cert).length > 0;
 					let identityError: Error | undefined;
-					if (checkServerIdentity !== undefined && hasPeerCertificate) {
+					if (userIdentityCheck !== undefined && hasPeerCertificate) {
 						try {
-							identityError = checkServerIdentity(hostname, cert) ?? undefined;
+							identityError = userIdentityCheck(hostname, cert) ?? undefined;
 						} catch (error) {
 							identityError = error as Error;
 						}
-					} else if (checkServerIdentity !== undefined) {
+					} else if (userIdentityCheck !== undefined) {
 						identityError = new Error("TLS peer certificate missing.");
-					} else {
+					} else if (effectiveConnectionOptions.rejectUnauthorized !== false) {
+						// No custom identity check and rejectUnauthorized is not explicitly false –
+						// fall back to the socket's own authorization result.
 						identityError = sckt?.authorized ? undefined : sckt?.authorizationError;
 					}
+					// When rejectUnauthorized === false and no custom check, accept the connection.
 
 					if (identityError === undefined) {
-						debug("TLS connection accepted by pinned certificate.");
+						debug("TLS connection accepted.");
 						sckt?.destroy();
 						sckt = undefined;
 						resolve();
 					} else {
-						const error =
-							identityError ?? sckt?.authorizationError ?? new Error("TLS authorization failed.");
+						const error = identityError;
 						debug(`TLS connection authorization error: ${error.message}`);
 						reject(error);
 						sckt = undefined;

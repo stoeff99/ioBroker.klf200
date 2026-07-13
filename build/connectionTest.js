@@ -3,7 +3,9 @@ import { lookup } from "dns/promises";
 import { Connection } from "klf-200-api";
 import { connect } from "node:tls";
 import ping from "ping";
+import { applyKlf200TlsFingerprintPatch, createKlf200PinnedTlsOptions } from "./tlsFingerprint.js";
 const debug = debugModule("connectionTest");
+applyKlf200TlsFingerprintPatch();
 /**
  * Represents the result of a connection test step.
  */
@@ -61,16 +63,16 @@ export class ConnectionTest {
     /**
      * Pings the given IP address and returns the latency in milliseconds.
      *
-     * @param ipadress The IP address to ping.
+     * @param ipaddress The IP address to ping.
      * @returns A promise that resolves to the latency in milliseconds.
      */
-    async ping(ipadress) {
-        debug(`Pinging IP address: ${ipadress}`);
+    async ping(ipaddress) {
+        debug(`Pinging IP address: ${ipaddress}`);
         const pingConfig = {
             packetSize: 64,
         };
         try {
-            const result = await ping.promise.probe(ipadress, pingConfig);
+            const result = await ping.promise.probe(ipaddress, pingConfig);
             if (!result.alive) {
                 debug(`Ping failed`);
                 throw new Error(`Ping failed. ${result.output}`);
@@ -98,19 +100,49 @@ export class ConnectionTest {
      */
     async connectTlsSocket(hostname, port, connectionOptions) {
         debug(`Connecting to TLS socket at ${hostname}:${port}`);
+        const effectiveConnectionOptions = connectionOptions ?? createKlf200PinnedTlsOptions(hostname);
+        // Strip checkServerIdentity from socket-level options so the TLS handshake always
+        // completes (even with an expired cert chain when rejectUnauthorized: false).
+        // The identity check is run manually in the secureConnect callback below.
+        const { checkServerIdentity: userIdentityCheck } = effectiveConnectionOptions;
+        const socketConnectionOptions = {
+            ...effectiveConnectionOptions,
+            checkServerIdentity: () => undefined,
+        };
         return new Promise((resolve, reject) => {
             let sckt;
             try {
-                sckt = connect(port, hostname, connectionOptions, () => {
-                    if (sckt?.authorized) {
-                        debug("TLS connection authorized");
+                sckt = connect(port, hostname, socketConnectionOptions, () => {
+                    const cert = sckt?.getPeerCertificate();
+                    const hasPeerCertificate = cert !== undefined && Object.keys(cert).length > 0;
+                    let identityError;
+                    if (userIdentityCheck !== undefined && hasPeerCertificate) {
+                        try {
+                            identityError = userIdentityCheck(hostname, cert) ?? undefined;
+                        }
+                        catch (error) {
+                            identityError = error;
+                        }
+                    }
+                    else if (userIdentityCheck !== undefined) {
+                        identityError = new Error("TLS peer certificate missing.");
+                    }
+                    else if (effectiveConnectionOptions.rejectUnauthorized !== false) {
+                        // No custom identity check and rejectUnauthorized is not explicitly false –
+                        // fall back to the socket's own authorization result.
+                        identityError = sckt?.authorized ? undefined : sckt?.authorizationError;
+                    }
+                    // When rejectUnauthorized === false and no custom check, accept the connection.
+                    if (identityError === undefined) {
+                        debug("TLS connection accepted.");
                         sckt?.destroy();
                         sckt = undefined;
                         resolve();
                     }
                     else {
-                        debug(`TLS connection authorization error: ${sckt?.authorizationError.message}`);
-                        reject(sckt?.authorizationError);
+                        const error = identityError ?? new Error("TLS authorization failed.");
+                        debug(`TLS connection authorization error: ${error.message}`);
+                        reject(error);
                         sckt = undefined;
                     }
                 });
@@ -137,12 +169,23 @@ export class ConnectionTest {
      * @returns A promise that resolves when the login is successful.
      */
     async login(hostname, password, connectionOptions) {
-        const connection = new Connection(hostname, connectionOptions);
+        const effectiveConnectionOptions = connectionOptions ?? createKlf200PinnedTlsOptions(hostname);
+        const connection = new Connection(hostname, effectiveConnectionOptions);
+        let loggedIn = false;
         try {
             await connection.loginAsync(password);
+            loggedIn = true;
         }
         finally {
-            await connection.logoutAsync();
+            if (loggedIn) {
+                await connection.logoutAsync();
+            }
+            else {
+                await Promise.race([
+                    connection.logoutAsync().catch(() => undefined),
+                    new Promise(resolve => setTimeout(resolve, 1000)),
+                ]);
+            }
         }
     }
     /**
@@ -192,8 +235,8 @@ export class ConnectionTest {
                 run: true,
                 success: true,
                 message: await this.translation.translate("connection-test-message-name-lookup-success", {
-                    hostname: hostname,
-                    ipaddress: ipaddress,
+                    hostname,
+                    ipaddress,
                 }),
                 result: ipaddress,
             };
@@ -205,7 +248,6 @@ export class ConnectionTest {
                     ...result[1],
                     run: true,
                     success: true,
-                    // message: `Ping was successful after ${ms} milliseconds.`,
                     message: await this.translation.translate("connection-test-message-ping-success", {
                         ms: ms.toString(),
                     }),
@@ -262,7 +304,7 @@ export class ConnectionTest {
                     run: true,
                     success: false,
                     message: await this.translation.translate("connection-test-message-ping-failure", {
-                        ipaddress: ipaddress,
+                        ipaddress,
                         message: error.message,
                     }),
                     result: error,
@@ -275,7 +317,7 @@ export class ConnectionTest {
                 run: true,
                 success: false,
                 message: await this.translation.translate("connection-test-message-name-lookup-failure", {
-                    hostname: hostname,
+                    hostname,
                 }),
                 result: error,
             };
