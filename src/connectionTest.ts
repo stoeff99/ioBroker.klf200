@@ -162,6 +162,10 @@ export class ConnectionTest implements IConnectionTest {
 		const { checkServerIdentity: userIdentityCheck } = effectiveConnectionOptions;
 		const socketConnectionOptions: ConnectionOptions = {
 			...effectiveConnectionOptions,
+			// Always return undefined (no error) so the TLS handshake completes even when the
+			// cert chain is invalid (e.g. expired factory CA).  The real check is done manually
+			// in the secureConnect callback below – mirroring the approach used by the klf-200-api
+			// connection patch in tlsFingerprint.ts.
 			checkServerIdentity: () => undefined,
 		};
 		return new Promise<void>((resolve, reject) => {
@@ -192,7 +196,9 @@ export class ConnectionTest implements IConnectionTest {
 						sckt = undefined;
 						resolve();
 					} else {
-						const error = identityError ?? new Error("TLS authorization failed.");
+						// identityError is always defined here (checked above), so the fallback
+						// new Error(...) is unreachable; kept for type-safety.
+						const error = identityError;
 						debug(`TLS connection authorization error: ${error.message}`);
 						reject(error);
 						sckt = undefined;

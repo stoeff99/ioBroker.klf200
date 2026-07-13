@@ -176,6 +176,9 @@ describe("connectionTest", function () {
 			const baseOptions = MockServerController.getMockServerConnectionOptions();
 			const options: ConnectionOptions = {
 				...baseOptions,
+				// Intentionally disabled for this test: simulates an expired cert chain accepted by
+				// the user via rejectUnauthorized: false.  This is the scenario under test.
+				// lgtm[js/disabling-certificate-validation]
 				rejectUnauthorized: false,
 				ca: undefined, // no CA → chain validation fails → socket.authorized will be false
 				checkServerIdentity: undefined,
