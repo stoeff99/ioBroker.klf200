@@ -133,8 +133,10 @@ export function applyKlf200TlsFingerprintPatch(): void {
 							reject(identityError);
 							return;
 						}
-					} else if (!this.sckt?.authorized) {
+					} else if (!this.sckt?.authorized && effectiveConnectionOptions.rejectUnauthorized !== false) {
 						// No custom check and the socket is not authorized – report the TLS error.
+						// Skip this check when rejectUnauthorized is false: the caller has explicitly
+						// opted in to accepting invalid/expired certificate chains.
 						const error = this.sckt?.authorizationError ?? new Error("TLS authorization failed.");
 						const socket = this.sckt;
 						this.sckt = undefined;

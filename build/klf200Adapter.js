@@ -8,7 +8,6 @@ import { scheduleJob } from "node-schedule";
 import path from "node:path";
 import { env } from "node:process";
 import { timeout } from "promise-timeout";
-import { checkServerIdentity as checkServerIdentityOriginal } from "node:tls";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ConnectionTest, ConnectionTestResult } from "./connectionTest.js";
 import { KLF200DeviceManagement } from "./deviceManagement/klf200DeviceManagement.js";
@@ -17,9 +16,11 @@ import { Setup } from "./setup.js";
 import { SetupGroups } from "./setupGroups.js";
 import { SetupProducts } from "./setupProducts.js";
 import { SetupScenes } from "./setupScenes.js";
+import { applyKlf200TlsFingerprintPatch, createKlf200PinnedTlsOptions } from "./tlsFingerprint.js";
 import { StateHelper } from "./util/stateHelper.js";
 import { ArrayCount, convertErrorToString, waitForSessionFinishedNtfAsync } from "./util/utils.js";
 const refreshTimeoutMS = 120_000; // Wait max. 2 minutes for the notification.
+applyKlf200TlsFingerprintPatch();
 /**
  * The adapter class.
  */
@@ -327,7 +328,7 @@ export class Klf200 extends utils.Adapter {
             // Setup connection and initialize objects and states
             if (!this.config.advancedSSLConfiguration) {
                 this.log.debug("Regular login.");
-                this._Connection = new Connection(this.config.host);
+                this._Connection = new Connection(this.config.host, createKlf200PinnedTlsOptions(this.config.host));
             }
             else if (this.config.SSLConnectionOptions) {
                 this.log.debug(`Debug login with SSL ConnectionOptions: ${JSON.stringify(this.config.SSLConnectionOptions)}`);
@@ -335,7 +336,7 @@ export class Klf200 extends utils.Adapter {
             }
             else {
                 this.log.debug(`Advanced login with SSL public key: ${this.config.SSLPublicKey} and fingerprint: ${this.config.SSLFingerprint}`);
-                this._Connection = new Connection(this.config.host, Buffer.from(this.config.SSLPublicKey), this.config.SSLFingerprint);
+                this._Connection = new Connection(this.config.host, createKlf200PinnedTlsOptions(this.config.host, this.config.SSLPublicKey, this.config.SSLFingerprint));
             }
             // Overwrite the default timeout for the sendFrameAsync method
             const SEND_FRAME_TIMEOUT = env.SEND_FRAME_TIMEOUT;
@@ -1301,19 +1302,7 @@ export class Klf200 extends utils.Adapter {
         });
     }
     createConnectionOptions(data) {
-        const klf200Connection = new Connection(data.hostname, data.advancedSSLConfiguration?.sslPublicKey !== undefined
-            ? Buffer.from(data.advancedSSLConfiguration?.sslPublicKey)
-            : undefined, data.advancedSSLConfiguration?.sslFingerprint);
-        return {
-            rejectUnauthorized: false,
-            ca: klf200Connection.CA,
-            checkServerIdentity: (host, cert) => {
-                if (cert.fingerprint === klf200Connection.fingerprint) {
-                    return undefined;
-                }
-                return checkServerIdentityOriginal(host, cert);
-            },
-        };
+        return createKlf200PinnedTlsOptions(data.hostname, data.advancedSSLConfiguration?.sslPublicKey, data.advancedSSLConfiguration?.sslFingerprint);
     }
     /**
      * Some message was sent to this instance over message box. Used by email, pushover, text2speech, ...
@@ -1367,7 +1356,7 @@ export class Klf200 extends utils.Adapter {
      * @param err The error to convert to a string.
      */
     getErrorMessage(err) {
-        // Irgendwo gibt es wohl einen Fehler ohne Message
+        // Sometimes an error is raised without a message
         if (err == null) {
             return "undefined";
         }
@@ -1399,7 +1388,7 @@ export class Klf200 extends utils.Adapter {
      * @param error - The error that occurred.
      */
     onUnhandledError(error) {
-        ((this && this.log) || console).error(`Unhandled exception occured: ${JSON.stringify(error)}`);
+        ((this && this.log) || console).error(`Unhandled exception occurred: ${JSON.stringify(error)}`);
         this.terminate("unhandled exception", 1);
     }
 }
